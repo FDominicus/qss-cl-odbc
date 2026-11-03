@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qss-cl-odbc driver notes</title>
+<style>
+  :root { --bg: #fdfdfb; --fg: #1d1d1b; --muted: #5d5d58; --code-bg: #f1f0ec; --rule: #d9d7cf; --link: #1f5f99; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1a; --fg: #e8e6e0; --muted: #a4a29a; --code-bg: #262624; --rule: #3a3936; --link: #8cbcea; }
+  }
+  body { background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+         max-width: 52rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  h1 { font-size: 1.9rem; margin-bottom: .2rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.4rem; border-bottom: 1px solid var(--rule); padding-bottom: .2rem; }
+  a { color: var(--link); }
+  code, pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .9em; }
+  code { background: var(--code-bg); padding: .05em .3em; border-radius: 3px; }
+  pre { background: var(--code-bg); padding: .8rem 1rem; overflow-x: auto; border-radius: 4px; }
+  li { margin: .35rem 0; }
+  .lead { color: var(--muted); margin-top: 0; }
+  .historical { color: var(--muted); border-top: 3px double var(--rule); margin-top: 3rem; padding-top: 1rem; }
+  .historical h3, .historical h4 { color: var(--fg); }
+</style>
+</head>
+<body>
+
+<h1>Driver notes</h1>
+<p class="lead">Peculiarities of ODBC drivers found while testing qss-cl-odbc (2026). The test suite records
+them as features per database, so the tests that depend on them are skipped with the reason.
+<a href="documentation.html">Documentation</a></p>
+
+<h2>Microsoft Access (ACE ODBC driver, Windows)</h2>
+<ul>
+  <li><b>Reserved words as column names</b> (<code>MEMO</code>, <code>DEC</code>, <code>TEXT</code> …) give
+      “Syntax error in field definition” in <code>CREATE TABLE</code>. Put every name in brackets:
+      <code>[text]</code>.</li>
+  <li><b><code>BINARY(n)</code> has a fixed length:</b> shorter values come back padded with zero bytes.
+      Use <code>LONGBINARY</code> for binary data of varying length.</li>
+  <li><b>Types as reported:</b> text as <code>SQL_VARCHAR</code> (not WVARCHAR; qss-cl-odbc reads it as
+      UTF-16 anyway), <code>CURRENCY</code> as <code>SQL_NUMERIC</code> (read as an exact rational),
+      Yes/No as 0/1 (not −1), <code>SUM()</code> over an INTEGER column as a double.</li>
+  <li><b>Decimal parameters:</b> the driver rejects <code>SQL_DECIMAL</code> (HYC00, optional feature not
+      implemented); qss-cl-odbc binds <code>:decimal</code> as <code>SQL_NUMERIC</code>.</li>
+  <li><b>Two connections:</b> what one connection commits may reach another one only after about
+      5 seconds (the engine's page cache, <code>PageTimeout</code>). A changed row took 5 s; a new row was
+      once visible at once and once not right after the commit. Do not rely on it.</li>
+  <li><b>No <code>SQLForeignKeys</code>:</b> the driver does not support it (IM001 from the driver
+      manager); <code>get-foreign-keys</code> signals an <code>sql-error</code>.</li>
+  <li><b>Object permissions from the .mdb era:</b> a database once secured with a workgroup file
+      (.mdw) and converted to .accdb keeps its owner. Over ODBC (user <code>admin</code>) reading and writing
+      rows works, but <code>CREATE TABLE</code> fails with −1907 “no permission”. Importing the tables
+      into a new .accdb removes the old owner.</li>
+  <li><b>Strict about buffer lengths:</b> <code>SQLGetInfo</code> with buffer length 0 for a numeric value
+      fails without a diagnostic record (older versions of plain-odbc did that; connecting failed).</li>
+</ul>
+
+<h2>PostgreSQL (psqlODBC)</h2>
+<ul>
+  <li><b>Windows: switch off “LF &lt;-&gt; CR/LF conversion”</b> (data source settings, Datasource →
+      Page 2, or <code>LFConversion=0</code> in the connection string). It is on by default and turns every
+      LF into CR LF when reading: text changes silently.</li>
+  <li><b>Creating the test database:</b> <code>CREATE DATABASE x OWNER odbc_user ENCODING 'UTF8'
+      TEMPLATE template0</code>; since PostgreSQL 15 other users may not create tables in schema
+      <code>public</code>.</li>
+  <li><b>Syntax errors in a transaction:</b> psqlODBC before version 18 discards the whole transaction on
+      a syntax error (psqlodbc issue #203), on other errors only the statement.</li>
+  <li><b><code>:string</code> parameters:</b> under Linux the Unicode driver rejects non-ASCII characters
+      through <code>SQL_C_CHAR</code> (“Could not convert … to wide chars”); under Windows it accepts them.
+      Plain strings (Unicode) always work.</li>
+  <li><b>No NUL character in <code>TEXT</code></b>; identifiers are cut to 63 characters without an error.</li>
+  <li><b>Output parameters</b> work with functions through <code>{call f(?, ?)}</code>. Procedures
+      (<code>CREATE PROCEDURE</code>) cannot be called this way (42809 “… is a procedure”).</li>
+  <li><b>Several statements in one call</b> return several result sets; an error in a later statement
+      is reported at execution.</li>
+  <li><b>Long diagnostic messages are split:</b> psqlODBC cuts a message into several diagnostic records
+      of the size of the first request (by design, see <code>ER_ReturnError</code> in <code>environ.c</code>),
+      returning <code>SQL_SUCCESS</code> and the length of the part. The cut is counted in UTF-8 bytes: when
+      it falls into a multi-byte character (any umlaut), <code>SQLGetDiagRecW</code> returns
+      <code>"Error: SqlState=…"</code> instead of the text, and the message is lost (psqlODBC 16).
+      qss-cl-odbc asks with an 8190-character buffer first and reads again when the buffer was full.</li>
+</ul>
+
+<h2>SQLite (Christian Werner's sqliteodbc)</h2>
+<ul>
+  <li><b>ANSI text is UTF-8</b>, also under Windows: connect with <code>:ansi-encoding :utf-8</code>
+      (<code>connect-sqlite</code> does) when using <code>:string</code> or <code>:clob</code> parameters. With
+      Windows-1252 the bytes are stored raw and characters are lost when reading.</li>
+  <li><b>BLOBs reported as <code>BINARY(255)</code>:</b> with bound columns longer values are cut (with a
+      warning). Set <code>(use-bind-column con)</code> to NIL to read them completely.</li>
+  <li><b>Values as stored:</b> text is cut at a NUL character; doubles keep 15 digits
+      (0.30000000000000004 comes back as 0.3); <code>VARCHAR(n)</code> lengths are not enforced; there are
+      no exact decimals: <code>NUMERIC(10,2)</code> is stored as REAL and comes back as a double.</li>
+  <li><b>Integer expressions reported as 32 bit:</b> every integer expression without a declared type
+      (<code>sum(…)</code>, literals, even <code>CAST(… AS BIGINT)</code>) is described as
+      <code>SQL_INTEGER</code>, and read as <code>SQL_C_SLONG</code> the driver cuts it to 32 bit without an
+      error (<code>3000000000</code> → <code>-1294967296</code>; found with Chinook:
+      <code>sum(Bytes)</code> 117386255350 → 1422138358). SQLite always computes with 64 bit, so
+      qss-cl-odbc reads <code>SQL_INTEGER</code> columns of SQLite connections as 64 bit
+      (<code>integer-as-bigint</code>).</li>
+  <li><b>SQL:</b> no ODBC escapes such as <code>{fn UCASE(…)}</code>; one statement per call.</li>
+  <li><b>Locking:</b> with autocommit off (qss-cl-odbc's default) a connection that only read still holds
+      its transaction and blocks writers (“database is locked”). Use <code>*connect-autocommit*</code> for
+      readers, or commit/rollback after reading.</li>
+  <li><b>Linux build is an ANSI driver:</b> unixODBC converts SQL text beyond Latin-1 with losses (a
+      column alias <code>Ωx</code> became <code>©x</code>). Values passed as parameters are not affected.</li>
+</ul>
+
+<h2>MySQL / MariaDB (MariaDB Connector/ODBC)</h2>
+<p>Tested on Linux with MariaDB 10.11 and MariaDB Connector/ODBC 3.1.15 (Unicode driver). MySQL's own
+Connector/ODBC is not tested yet.</p>
+<ul>
+  <li><b>Characters U+xxD8 to U+xxDB</b> (for example <code>Ø</code>, U+00D8): drivers before 3.1.24 and
+      3.2.10 take the low byte of each UTF-16 unit for the start of a surrogate pair (MariaDB issue
+      ODBC-502, fixed in August 2026). Writing appends NUL characters (<code>"aØb"</code> is stored as
+      <code>"aØb\0"</code>); reading reports too few bytes (<code>"aØb"</code> comes back as
+      <code>"aØ"</code>). Reproduced in plain C, so not a qss-cl-odbc problem: update the driver. The test
+      suite detects the bug by behaviour and skips the affected checks.</li>
+  <li><b>Text is cut at a NUL character</b> when read, although the server stores it.</li>
+  <li><b>Row counts:</b> <code>UPDATE</code> returns the number of <em>changed</em> rows, not the matched ones,
+      unless the connection uses the option for found rows (<code>FOUND_ROWS=1</code> /
+      <code>OPTION=2</code>).</li>
+  <li><b>16 MB column sizes:</b> <code>TEXT</code> types and catalog columns are reported with sizes such as
+      16777216. qss-cl-odbc reads character and binary columns larger than <code>*max-precision*</code> with
+      <code>SQLGetData</code> (before 2026-10-14 this was an error “column … larger than maximum size”).</li>
+  <li><b>DDL</b> commits implicitly; <code>TIMESTAMP</code> starts in 1970 (use <code>DATETIME</code>);
+      <code>TEXT</code> holds 64 KB (use <code>LONGTEXT</code>).</li>
+</ul>
+
+<h2>Driver managers</h2>
+<ul>
+  <li><b>unixODBC:</b> only the development package provides <code>libodbc.so</code>; qss-cl-odbc loads
+      <code>libodbc.so.2</code>, which the runtime package has.</li>
+  <li><b>Headers differ in a few constants</b> that qss-cl-odbc does not use:
+      <code>SQL_API_SQLCANCELHANDLE</code> is 1550 in Microsoft's headers and mingw-w64, 1022 in unixODBC
+      (2.3.12 and current source); <code>SQL_SPEC_*</code> is 4.00 in microsoft/ODBC-Specification, 3.80 in
+      mingw-w64, 3.52 in unixODBC (qss-cl-odbc leaves them out). <code>(qss-cl-odbc-generate:check)</code>
+      lists the differences for a platform.</li>
+  <li><b><code>SQL_C_BOOKMARK</code></b> depends on the pointer size (64 bit: −27, 32 bit: −18).</li>
+</ul>
+
+<div class="historical">
+<h2>Historical notes (Roland Averkamp, 2005–2008)</h2>
+<p>Kept as written; not checked again. Some of it no longer applies to current drivers or to this
+version (qss-cl-odbc) (e.g. PostgreSQL <code>bytea</code> columns work, decimals are exact).</p>
+    <h3>Notes</h3>
+    <p> This documents contains some observations and pitfalls encountered 
+      when using different drivers and databases. Of course this list is not complete.
+      Also some of these problems might have vanished in the mean time. </p>
+    <h4> driver-connect </h4>
+    Using driver-connect one does not have to create an ODBC datasource for every 
+    database one wants to use. The necessary parameters for the driver manager/driver 
+    are supplied via connection string. 
+    Some connection strings examples for using driver-connect
+    <ul>
+      <li> using the excel driver "DRIVER={Microsoft Excel Driver (*.xls)};
+        DBQ=C:/TEMP/Book1.xls"
+      <li> using the access driver:
+        "Driver={Microsoft Access Driver (*.mdb)};DBQ=c:/temp/Copy of OMR TT Reports.mdb"
+      <li> using an Oracle Driver "DRIVER=Oracle in oracl92;UID=SCOTT;PWD=tiger;server=ltrav1"
+    </ul>
+    One way to get a connection string is to create a file dsn and have a look at its contants, 
+    note that userid and password are encrypted in this file,
+    
+    
+    <h4>Problems using the Jet driver on windows</h4>
+    It seems that the jet driver needs to have write access to the registry directory 
+    HKEY_LOCAL_MACHINE\SOFTWARE\ODBC,
+    see <a href=http://support.microsoft.com/default.aspx?scid=kb;EN-US;Q295297> 
+      PRB: Error Message: 0x80004005: General Error Unable to Open Registry Key
+    </a>.
+    In the mentioned document these steps are recommended
+    <ul>
+      <li>1. Start Registry Editor (Regedt32.exe). 
+      <li>2. Select the following key in the registry:
+        HKEY_LOCAL_MACHINE\SOFTWARE\ODBC  
+      <li>3. On the Security menu, click Permissions. 
+      <li>4. Type the required permissions for the account that is accessing the Web page. 
+      <li>5. Quit Registry Editor 
+    </ul>
+    <h4> driver-connect, another approach</h4>
+    It seems that windows creates a temporary dsn if you try to connect via driver 
+    connect and if use the key DRIVER=????.  If security is high on the computer this
+    will fail. Another option is to create for each kind of datasource a default 
+    datasource with the correct driver. 
+    
+    
+    <h4> performance </h4>
+    It seems that with clisp storing and retrieving C datatypes from memory take a lot time.
+    This should be possible without consing, maybe I have to change my clisp FFC module.
+    
+    <h4> access </h4>
+    For character parameters Access requires that the columnsize argument 
+    is set to a value smaller than 255. Oracle and sql server do not care.
+    It sems that the columns size parameter must depend on the driver.
+
+    <h4>lobs and oracle</h4>
+    There is a problem with stored procedures with lob parameters.
+    If the actual parameter is longer than 32513, then an error occurs:
+<pre>
+[Oracle][ODBC][Ora]ORA-01460: Nicht implementierte oder sinnlose Umwandlung gefordert
+, error code 1460, State: 37000.
+</pre>
+    When doing an insert,update there is no problem.
+    I have found he following in V$SQL:<br>
+    <tt>insert into test (id,text) values(23* :1,:2) RETURNING "TEXT" INTO :TEXT</tt>
+<br>
+
+    <h4>line end and oracle</h4>
+    Oracle has problems with ascii(13) (or ^M) in create procedure statements 
+    (I supect this is the holds for all PL/SQL statements). They are accpeted in SQL 
+    statements. It seems that CLISP replaces this character on Windows with chr(10). 
+    Allegro does not do this. Therefore some code that runs fine with CLISP
+    causes an error on with Allegro.
+<pre>
+
+[24]> (exec-command  *con* (concatenate 'string "create or replace procedure b99 (x integer) as begin null;" (string (code-char 32)) " end;"))
+
+NIL
+[25]> (exec-command  *con* (concatenate 'string "create or replace procedure b99 (x integer) as begin null;" (string (code-char 13)) " end;"))
+
+WARNING:
+[Oracle][ODBC][Ora]Trigger, procedure or function created with PL/SQL compilation error(s)., error code 24344, State: S1000.
+NIL
+[26]> (exec-command  *con* (concatenate 'string "create or replace procedure b99 (x integer) as begin null;" (string (code-char 10)) " end;"))
+
+NIL
+[27]> (exec-query *con* (concatenate 'string "select " (string (code-char 13)) " * from dual"))
+
+(("X")) ;
+("DUMMY")
+
+</pre>
+
+<h4>MYODBC and unicode</h4>
+MYODBC (3.51?) does not return unicode character data as datatype SQL_WVARCHAR. If for SQL_VARCHAR data the return datatype is set to SQLWCHAR, the length in the indicator is 0. It seems that the buffer is also empty (= #x000000000 ...). There is some talk about better support for unicode in another version (3.52?).
+
+<h4>
+<p>
+More Information about Oracle ODBC Driver</h4>
+There is documentation for the  Oracle  ODBC driver, it is at</p>
+<tt>
+Oracle® Database Administrator's Reference<br>
+10g Release 2 (10.2) for UNIX-Based Operating Systems<br>
+Part Number B15658-05<br>
+G Using Oracle ODBC Driver<br>
+</tt>
+or better under the link 
+<a href="http://download-uk.oracle.com/docs/cd/B19306_01/server.102/b15658/app_odbc.htm"> G Using Oracle ODBC Driver</a>, but this can change any time.
+
+<h4>Oracle 9.2 and unicode</h4>
+<p>
+I can not make Oracle return unicode. I am using a 9.2 DB I have created a nchar column which is a 
+unicode datatype for 9.2.
+<p>
+I am using the oracle driver. There is a workaround tab where one can force the driver to 
+return string data as SQL_WCHAR.
+Storing unicode strings with parameters of type :unicode-string inserts some dummy character (a '?' standing on its head). Selecting nchr(1000) returns the same charcater.<br>
+Only selecting from  NLS_SESSION_PARAMETERS returns a 16bit charcater.
+Or do I have this problem since NLS_CHARACTERSET=WE8ISO8859P15?
+<h4> Oracle 10gR2 and unicode</h4>
+It works now (with Oracle driver!):
+<pre>
+[13]> (schar (caar (exec-query *con* "select nCHR(232) from dual")) 0)
+
+#\LATIN_SMALL_LETTER_E_WITH_GRAVE
+[14]> 
+
+[16]> (char-code (schar (caar (exec-query *con* "select ? from dual"  (list (string (code-char 1234)) :unicode-string))  ) 0))
+
+1234
+</pre>
+
+
+<h4>Microsoft ODBC driver for Oracle</h4>
+Currently it does not work on my computer. I get the error message:
+<pre>*** - [Microsoft][ODBC driver for Oracle][Oracle], error code 0, State: NA000.
+</pre>
+Visual Studio 6.0 has the same problem. Is 9.2 supported by Microsoft ODBC-Driver?
+
+<h4>Oracle and ref cursors</h4>
+This works with 9.2 and 10g and 10gR2. Make sure that the ODBC datasource is 
+configured correctly. On the "Oracle ODBC Driver Configuration" window check the
+checkbox with label "Enable Result Sets".<br>
+Example:
+<pre>
+create or replace package test99_pkg as        
+  type refcursor is ref cursor;       
+  procedure test_cursor(v varchar2,c in out refcursor);      
+end;
+
+create or replace package body test99_pkg as       
+  procedure test_cursor(v varchar2,c in out refcursor) is
+  begin         
+    open c for select v as a,'1234567890' as b from dual; 
+  end;      
+end;
+</pre>
+
+The cursor can be retrieved with following lisp code:
+<pre>
+(with-prepared-statement (stm con 
+                                "{call test99_pkg.test_cursor(?,?)}" 
+                                '(:string :in ))
+    (let ((str "just a string"))
+      (exec-prepared-query stm str)))
+</pre>
+Note that the cursor parameter must be declared in/out. 
+If a parameter ist supplied for the cursor parameter, it still works. 
+</em>
+<em>This needs more investigations.</em>
+
+<h4>Oracle TIMESTAMP datatype</h4>
+<h5> 9.2, 10g</h4>
+Windows: For the Oracle-Driver, queries on TIMESTAMP columns return SQL_NULL_TYPE. Normally this would be retrieved
+as String. But the program coredumps at the first fetch.
+The Microsoft driver coredumps earlier, namely when the sqlexec is executed.<br>
+Columns of type SQL_NULL_TYPE cause an error, the offending column has to be removed from the query.
+At least we prevent the coredump of the Oracle driver.<br>
+I am pretty sure that this is a driver bug, Microsoft Access coredumps as well in similar situations.
+<h5>10g R2</h5>
+It works now, a timestamp column is retrieved as SQL_TIMESTAMP.
+Of course the sub second precision is not supported.
+
+<h4>MySQL</h4>
+This is not one would expect!
+<pre>
+MySQL> create view bla as select  date_add('2007-8-1',interval 1 day) as a;
+Query OK, 0 rows affected (0.01 sec)
+
+MySQL> desc bla
+    -> ;
++-------+---------------+------+-----+---------+-------+
+| Field | Type          | Null | Key | Default | Extra |
++-------+---------------+------+-----+---------+-------+
+| a     | varbinary(29) | YES  |     | NULL    |       |
++-------+---------------+------+-----+---------+-------+
+1 row in set (0.00 sec)
+</pre>
+how to do it right:
+<pre>
+MySQL> create view bla2 as select  date_add(cast('2007-8-1' as datetime),interval 1 day) as a;
+Query OK, 0 rows affected (0.00 sec)
+
+MySQL&gt; desc bla2;
++-------+----------+------+-----+---------+-------+
+| Field | Type     | Null | Key | Default | Extra |
++-------+----------+------+-----+---------+-------+
+| a     | datetime | YES  |     | NULL    |       |
++-------+----------+------+-----+---------+-------+
+1 row in set (0.00 sec)
+</pre>
+<p>
+Be carefull with variables, declared with something like 
+<tt>set @a =1</tt>. The types are automatically determined, and a type for
+dates does not exist.
+</p>
+<p>
+Of course error handling in MySQL is not existent, maybe I should change the
+server settings:
+<pre>
+MySQL> select cast(cast('12345678901' as decimal) as char) as a, cast(cast('1234567890' as decimal) as char) as b;
++------------+------------+
+| a          | b          |
++------------+------------+
+| 9999999999 | 1234567890 |
++------------+------------+
+1 row in set, 1 warning (0.00 sec)
+</pre>
+<p>So there is no overflow error.</p>
+<p>
+Division by zero is handled, but only for an insert:
+<pre>
+MySQL> set @a=1;
+Query OK, 0 rows affected (0.00 sec)
+
+MySQL> set @b=0;
+Query OK, 0 rows affected (0.00 sec)
+
+MySQL> select @a/@b;
++-------+
+| @a/@b |
++-------+
+|  NULL |
++-------+
+1 row in set, 1 warning (0.00 sec)
+
+MySQL> insert into blu select @a/@b;
+ERROR 1365 (22012): Division by 0
+</pre>
+
+<h5>Handling of numbers</h5>
+<pre>
+[130]> (exec-query *con* "select cast(1.5e0/3.9e0 as char(200)) as a")
+
+(("0.38461538461538")) ;
+("a")
+[131]> (exec-query *con* "select cast(cast(1.5e0/3.9e0 as decimal(40,20)) as char(200)) as a")
+
+(("0.38461538461538460000")) ;
+("a") 
+</pre>
+In clisp on x86 I get:
+<pre>
+[132]> (/ 1.5d0 3.9d0)
+
+0.38461538461538464d0
+</pre>
+With sql server I get the same value, as with clisp.
+<p>
+And another example :
+<pre>
+MySQL> select 1e14/7e0,1e14/7e0-14285714285714;
++----------------+-------------------------+
+| 1e14/7e0       | 1e14/7e0-14285714285714 |
++----------------+-------------------------+
+| 14285714285714 |              0.28515625 |
++----------------+-------------------------+
+1 row in set (0.00 sec)
+</pre>
+The decimal expansion of 1/7 is periodic, so the digits 0.285 are correct. Thus
+MySQL uses the precision of double, but does not return all digits.
+<p>
+
+<h3>The SQL Parser</h3>
+The <tt>/* ..*/</tt> comments do not have to be closed:
+<pre>
+19]> (exec-query *con3* "select 1 as a /*bla")
+
+((1)) ;
+("a")
+</pre>
+Maybe this depends on the version of MySQL or some system parameter.
+</p>
+<h3>Parameters</h3>
+<p>
+As mentioned in the documentation, MySQL does not support out and in/out 
+parameters for sql statements. As the documentation of MySQL suggest 
+one should declare variables, pass them as parameters to the stored 
+procedures. After the procedure call one get there contents with a select 
+statement, example: <tt>select @param1 as param1,@param2 as param2</tt>.
+
+</p>
+<p>
+The problem with variables on MySQL is that one can only set them. It is
+not possible to declare a datatype for them.
+Another option is to select the parameters directly in the stored procedure. 
+Thus instead of having out or in/out parameters, the procedure returns
+return values as a result set. Note that <tt>exec-query</tt> accepts parameters 
+and can return more than one result set. One example, assume 
+<tt>*con*</tt> is a MySQL connection.
+<pre>
+[33]>  (exec-command *con* "
+    create procedure test99(a1 varchar(200),b1 int,c1 date) 
+    begin
+    declare a2 varchar(200);
+    declare b2 int;
+    declare c2 date;
+     set a2=concat(a1,'x');
+      set b2=b1+3;
+      set c2=c1+ interval 1 day;
+      select a2 as a2,b2 as b2, c2 as c2;
+    end;")
+
+
+[34]> (exec-query *con* "call test99(?,?,?)" "abc" 
+                          (list 12 :integer) (list  (encode-universal-time 12 3 5 12 11 2007) :date))
+
+(("abcx" 15 3403897200)) ;
+("a2" "b2" "c2")
+[35]> 
+</pre>
+<h4> PostgreSQL </h4>
+<a href=http://sql-info.de/postgresql/postgres-gotchas.html>
+http://sql-info.de/postgresql/postgres-gotchas.html
+</a>
+<h5>BLOBS </h5>
+It seems that lobs are not supported.
+When executing an update with a BLOB I get:
+<pre>
+*** - 
+      ERROR: type "lo" does not exist;
+      Error while executing the query, error code 7, State: 42704.
+</pre>
+According to the documentation one has to run lo.sql from the contrib section. 
+Blobs Columns have to be declared as of type <tt>lo</tt>.
+<h5> SQL Parser</h5>
+The parser is buggy.
+<pre>
+<![CDATA[
+[76]> (plain-odbc:exec-query *con* "select 'a' as a,? as b " 1213)
+
+(("a" 1213)) ;
+("a" "b")
+[77]> (plain-odbc:exec-query *con* "select 'a' as a,/* comment */ ? as b " 1213)
+
+(("a" 1213)) ;
+("a" "b")
+[78]> (plain-odbc:exec-query *con* "select 'a' as a,/* comment ? */ ? as b " 1213)
+
+*** - The # of binded parameters < the # of parameter markers, error code 32, State: 07002.
+The following restarts are available:
+ABORT          :R1      Abort main loop
+Break 1 [79]> 
+
+[80]> (plain-odbc:exec-query *con* "select 'a' as a,/* comment '?' */ ? as b " 1213)
+
+(("a" 1213)) ;
+("a" "b")
+
+]]>
+</pre>
+Maybe this the ODBC driver and not the database itself.
+
+
+<h5> PostgreSQL, 8.3</h5>
+Creating a function like
+<pre>
+create function test99 ( a in integer ) returns void as $$
+    begin 
+    insert into testtab99 (a) values(a+1);
+    end; 
+   $$ language plpgsql;
+</pre>
+gives an error. PG Sql does not like that the name of the column is the
+same as the name of the parameter. This is a well known feature.
+<h5> Out Parameters </h5>
+Out parameter will be returned as out parameters. But a function with 
+out parameters must have as a return type record and the return values are
+returned as a result set with just one row.
+
+<h4>Sqlite</h4>
+<p>
+The following depends as usual very much on the ODBC driver. This driver is not written
+by the people who wrote Sqlite.
+</p>
+<p>
+Computed String columns are returnd as <tt>$SQL_VARCHAR</tt> of size 255.
+Of course this is not enough in many cases and data is truncated. 
+And the indicated size for the value in a specific row can be larger
+than 255.
+</p>
+<p>
+<pre>
+<![CDATA[
+[58]> (trace plain-odbc::column-info-to-class-and-args)
+....
+[61]> (plain-odbc:exec-command *con* "create table bla(a varchar(254),b varchar(255),c varchar(256))")
+
+
+[62]> (plain-odbc:exec-query *con* "select * from bla")
+
+1. Trace: (PLAIN-ODBC::COLUMN-INFO-TO-CLASS-AND-ARGS '12 '254 '0)
+1. Trace: PLAIN-ODBC::COLUMN-INFO-TO-CLASS-AND-ARGS ==> PLAIN-ODBC::STRING-COLUMN, NIL
+1. Trace: (PLAIN-ODBC::COLUMN-INFO-TO-CLASS-AND-ARGS '12 '255 '0)
+1. Trace: PLAIN-ODBC::COLUMN-INFO-TO-CLASS-AND-ARGS ==> PLAIN-ODBC::STRING-COLUMN, NIL
+1. Trace: (PLAIN-ODBC::COLUMN-INFO-TO-CLASS-AND-ARGS '-1 '256 '0)
+1. Trace: PLAIN-ODBC::COLUMN-INFO-TO-CLASS-AND-ARGS ==> PLAIN-ODBC::CLOB-COLUMN, NIL
+NIL ;
+("a" "b" "c")
+]]>
+</pre>
+</p>
+<p>
+So string columns which are larger than 255 are treated as <tt>SQL_LONGVARCHAR</tt>.
+It is possible to insert strings larger than column size into a 
+column. It is possible to retrieve the value via ODBC's <tt>sql_get_data_raw???</tt>. So for Sqlite one should always retrieve variable length values with this method.
+Mismatch between raw and text!
+<p>
+It seems <tt>blob</tt> columns are reported as <tt>SQL_BINARY</tt>.
+</p>
+</p>
+
+</div>
+
+</body>
+</html>

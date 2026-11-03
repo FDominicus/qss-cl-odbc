@@ -1,0 +1,15 @@
+Chinook sample database, version 1.4.5, unchanged.
+
+  Repository: https://github.com/lerocha/chinook-database
+  Commit:     7f67772503d71ba90f19283c38e93923addb43fa (2025-10-05)
+  Files:      ChinookDatabase/DataSources/Chinook_Sqlite.sqlite
+              LICENSE.md (here LICENSE-Chinook.md)
+  License:    MIT, (c) 2008-2024 Luis Rocha
+
+expected.sexp holds the expected values of the Chinook test suite
+(ChinookDatabase.Test/DatabaseTests/ChinookSqliteFixture.cs), typed for Lisp.
+
+Used by the test suite :chinook (src/test/chinook-tests.lisp) and by
+doc/examples/chinook-tour.lisp. For PostgreSQL, MySQL/MariaDB or SQL Server
+load the matching script from the repository (Chinook_PostgreSql.sql, ...)
+and run (qss-cl-odbc-test:run-chinook :dsn "...").

@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qss-cl-odbc documentation</title>
+<style>
+  :root { --bg: #fdfdfb; --fg: #1d1d1b; --muted: #5d5d58; --code-bg: #f1f0ec; --rule: #d9d7cf; --link: #1f5f99; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1a; --fg: #e8e6e0; --muted: #a4a29a; --code-bg: #262624; --rule: #3a3936; --link: #8cbcea; }
+  }
+  body { background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+         max-width: 52rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  h1 { font-size: 1.9rem; margin-bottom: .2rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.4rem; border-bottom: 1px solid var(--rule); padding-bottom: .2rem; }
+  h3 { font-size: 1.08rem; margin-top: 1.6rem; }
+  a { color: var(--link); }
+  code, pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .9em; }
+  code { background: var(--code-bg); padding: .05em .3em; border-radius: 3px; }
+  pre { background: var(--code-bg); padding: .8rem 1rem; overflow-x: auto; border-radius: 4px; line-height: 1.4; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; margin: .8rem 0; width: 100%; font-size: .95em; }
+  th, td { border-bottom: 1px solid var(--rule); padding: .35rem .5rem; text-align: left; vertical-align: top; }
+  th { font-weight: 600; }
+  .sig { font-family: ui-monospace, Consolas, monospace; font-weight: 600; margin-top: 1.2rem; }
+  .sig .kind { font-weight: 400; color: var(--muted); font-family: system-ui, sans-serif; font-size: .85em; margin-left: .6em; }
+  .lead { color: var(--muted); margin-top: 0; }
+  nav ol { columns: 2; padding-left: 1.2rem; }
+  @media (max-width: 40rem) { nav ol { columns: 1; } }
+</style>
+</head>
+<body>
+
+<h1>qss-cl-odbc</h1>
+<p class="lead">ODBC for Common Lisp: ODBC 3.5, Unicode, 64 bit; Windows, Linux, macOS.</p>
+
+<nav>
+<ol>
+  <li><a href="#overview">Overview</a></li>
+  <li><a href="#install">Installation and loading</a></li>
+  <li><a href="#example">A first session</a></li>
+  <li><a href="#connect">Connecting</a></li>
+  <li><a href="#transactions">Transactions</a></li>
+  <li><a href="#execute">Executing SQL</a></li>
+  <li><a href="#rows">Row by row</a></li>
+  <li><a href="#parameters">Parameters</a></li>
+  <li><a href="#prepared">Prepared statements</a></li>
+  <li><a href="#results">Result values</a></li>
+  <li><a href="#dates">Dates and times</a></li>
+  <li><a href="#text">Text and encodings</a></li>
+  <li><a href="#catalog">Catalog functions</a></li>
+  <li><a href="#errors">Errors and warnings</a></li>
+  <li><a href="#variables">Variables</a></li>
+  <li><a href="#lowlevel">The ODBC layer and its generator</a></li>
+  <li><a href="#c-to-lisp">From C to Lisp</a></li>
+  <li><a href="#tests">Tests</a></li>
+  <li><a href="#history">History and license</a></li>
+</ol>
+</nav>
+
+<h2 id="overview">1. Overview</h2>
+<p>qss-cl-odbc is a thin layer over the ODBC API. It executes SQL with parameters and returns the
+results as Lisp lists; it does not generate SQL and has no object layer. It talks to any database
+with an ODBC driver. Tested with Microsoft Access (ACE driver), PostgreSQL (psqlODBC), MariaDB
+(Connector/ODBC) and SQLite (Christian Werner's sqliteodbc); see <a href="notes.html">notes.html</a> for the peculiarities of these drivers.</p>
+<ul>
+  <li>ODBC 3 handle API, diagnostics with SQLGetDiagRecW, all text through the Unicode (…W) functions.</li>
+  <li>Pointer-sized <code>SQLLEN</code>/<code>SQLULEN</code>: correct on 64-bit Windows and Unix.</li>
+  <li>Exact decimals (NUMERIC, DECIMAL, CURRENCY) as rationals; integers beyond 32 bit.</li>
+  <li>Dates as universal time without time zone shifts, also before 1900.</li>
+  <li>Streaming of large results (<code>do-query</code>, <code>map-query</code>).</li>
+  <li>The declarations of the ODBC API are generated from Microsoft's ODBC headers.</li>
+</ul>
+
+<h2 id="install">2. Installation and loading</h2>
+<p>qss-cl-odbc needs CFFI and babel (both in Quicklisp) and an ODBC driver manager:</p>
+<table>
+  <tr><th>System</th><th>Driver manager</th></tr>
+  <tr><td>Windows</td><td><code>odbc32.dll</code>, part of Windows. Configure data sources with the 64-bit
+      “ODBC Data Sources” administrator when using a 64-bit Lisp.</td></tr>
+  <tr><td>Linux, BSD</td><td>unixODBC (package <code>unixodbc</code>); qss-cl-odbc loads <code>libodbc.so.2</code>.
+      Data sources in <code>/etc/odbc.ini</code> or <code>~/.odbc.ini</code>.</td></tr>
+  <tr><td>macOS</td><td>unixODBC or iODBC.</td></tr>
+</table>
+<p>Put the directory where ASDF finds it (for Quicklisp: <code>~/quicklisp/local-projects/</code>) and load it:</p>
+<pre><code>(ql:quickload :qss-cl-odbc)          ; or (asdf:load-system :qss-cl-odbc)</code></pre>
+<p>To use another driver manager library, set <code>qss-cl-odbc:*odbc-library-file*</code> before loading.
+Loading needs neither a C compiler nor the ODBC headers.</p>
+<p><b>Coming from plain-odbc:</b> qss-cl-odbc keeps the interface of plain-odbc; only the names
+differ. Load <code>:qss-cl-odbc</code> instead of <code>:plain-odbc</code> and write
+<code>qss-cl-odbc:</code> where you wrote <code>plain-odbc:</code>. Both can be loaded into the same
+Lisp. Two things behave differently from the original: decimals come as rationals (set
+<code>*decimal-as-rational*</code> to NIL for doubles), and errors carry ODBC 3 SQLSTATEs
+(<code>"HY000"</code>, <code>"42S02"</code>) instead of ODBC 2 ones (<code>"S1000"</code>).</p>
+
+<h2 id="example">3. A first session</h2>
+<p>Against SQLite (data source <code>EXAMPLE</code>). Output as printed by SBCL; multiple values are
+separated by <code>;</code>.</p>
+<pre><code>CL-USER&gt; (use-package :qss-cl-odbc)
+CL-USER&gt; (defvar *con* (connect-generic :dsn "EXAMPLE"))
+*CON*
+CL-USER&gt; *con*
+#&lt;ODBC-CONNECTION SERVER="/tmp/example.db" DBMS="SQLite" USER=""&gt;
+CL-USER&gt; (exec-command *con* "CREATE TABLE person (id INTEGER PRIMARY KEY, name VARCHAR(50), born TIMESTAMP, photo BLOB)")
+CL-USER&gt; (exec-update *con* "INSERT INTO person (id, name) VALUES (?, ?)" 1 "Ana Müller")
+1
+CL-USER&gt; (exec-update *con* "INSERT INTO person (id, name, born) VALUES (?, ?, ?)" 2 "Bo Ωmega" (list (encode-date 1970 3 29 14 30 0) :date))
+1
+CL-USER&gt; (commit *con*)
+NIL
+CL-USER&gt; (exec-query *con* "SELECT id, name, born FROM person ORDER BY id")
+((1 "Ana Müller" NIL) (2 "Bo Ωmega" 2216557800)) ;
+("id" "name" "born")
+CL-USER&gt; (decode-date (third (second (exec-query *con* "SELECT id, name, born FROM person ORDER BY id"))))
+1970 ;
+3 ;
+29 ;
+14 ;
+30 ;
+0
+CL-USER&gt; (do-query ((id name) *con* "SELECT id, name FROM person WHERE id &gt; ?" 0) (format t "~D: ~A~%" id name))
+1: Ana Müller
+2: Bo Ωmega
+2 ;
+("id" "name")
+CL-USER&gt; (with-prepared-statement (st *con* "INSERT INTO person (id, name) VALUES (?, ?)" '(:integer :in) '(:unicode-string :in 50)) (loop for i from 3 to 5 sum (exec-prepared-update st i (format nil "Person ~D" i))))
+3
+CL-USER&gt; (rollback *con*)
+NIL
+CL-USER&gt; (exec-query *con* "SELECT COUNT(*) FROM person")
+((2)) ;
+("COUNT(*)")
+CL-USER&gt; (handler-case (exec-query *con* "SELECT * FROM no_such_table") (sql-error (e) (list (sql-condition-state e) (sql-condition-message e))))
+("HY000" "[SQLite]no such table: no_such_table (1)")
+CL-USER&gt; (get-tables *con* nil nil "person" nil)
+((NIL NIL "person" "TABLE" NIL)) ;
+("TABLE_CAT" "TABLE_SCHEM" "TABLE_NAME" "TABLE_TYPE" "REMARKS")
+CL-USER&gt; (exec-command *con* "DROP TABLE person")
+CL-USER&gt; (close-connection *con*)
+NIL</code></pre>
+<p>And against PostgreSQL: exact decimals, and output parameters of a function:</p>
+<pre><code>CL-USER&gt; (defvar *pg* (connect-generic :dsn "PGTEST"))
+*PG*
+CL-USER&gt; (exec-query *pg* "SELECT CAST(? AS NUMERIC(19,4)) * 3, CAST(? AS DOUBLE PRECISION) * 3" 1/10 0.1d0)
+((3/10 0.30000000000000004d0)) ;
+("?column?" "?column?")
+CL-USER&gt; (exec-command *pg* "CREATE FUNCTION add_vat(net NUMERIC, OUT gross NUMERIC, OUT vat NUMERIC) AS $$ SELECT round(net * 1.19, 2), round(net * 0.19, 2) $$ LANGUAGE sql")
+CL-USER&gt; (exec-command *pg* "{call add_vat(?, ?, ?)}" 12345/100 (list nil :decimal :out 19 2) (list nil :decimal :out 19 2))
+14691/100 ;
+1173/50</code></pre>
+
+<h2 id="connect">4. Connecting</h2>
+
+<div class="sig">connect-generic &amp;rest attributes<span class="kind">function</span></div>
+<p>Connects with a connection string built from keyword/string pairs and returns an
+<code>odbc-connection</code>. <code>(connect-generic :dsn "TESTDB" :uid "u" :pwd "p")</code> uses
+<code>DSN=TESTDB;UID=u;PWD=p</code>. Without a DSN, name the driver:
+<code>(connect-generic :driver "{Microsoft Access Driver (*.mdb, *.accdb)}" :dbq "C:/data/x.accdb")</code>.
+The user is never prompted.</p>
+<p>One attribute is not part of the connection string: <code>:ansi-encoding</code> (a keyword such as
+<code>:utf-8</code> or <code>:cp1252</code>) sets the encoding of this connection's ANSI text, see
+<a href="#text">section 12</a>. An unknown encoding is an error before connecting.</p>
+
+<div class="sig">connect dsn user password<span class="kind">function</span></div>
+<p>Same as <code>(connect-generic :dsn dsn :uid user :pwd password)</code>.</p>
+
+<div class="sig">close-connection connection<span class="kind">function</span></div>
+<p>Rolls back an open transaction and closes the connection. It cannot be used again.</p>
+
+<div class="sig">connection-ansi-encoding connection<span class="kind">accessor</span></div>
+<p>The ANSI encoding of the connection; <code>setf</code>-able.</p>
+
+<div class="sig">use-bind-column connection<span class="kind">accessor</span></div>
+<p>T (default): result columns are bound (SQLBindCol), long ones read with SQLGetData. NIL: every
+column is read with SQLGetData. Needed for drivers that report a column too small, e.g. SQLite
+for BLOBs (reported as 255 bytes; bound reads are cut with a warning).</p>
+
+<div class="sig">integer-as-bigint connection<span class="kind">accessor</span></div>
+<p>T: <code>SQL_INTEGER</code> columns are read as 64-bit integers. Set when connecting to SQLite,
+whose driver reports every integer expression as <code>SQL_INTEGER</code> and would otherwise cut
+values beyond 32 bit (see <a href="notes.html">notes.html</a>). NIL for other databases.</p>
+
+<div class="sig">connect-sqlite file / connect-access file / connect-sql-server server database &amp;optional user password / connect-oracle tns user password / connect-mysql server database user password<span class="kind">functions</span></div>
+<p>Shortcuts that connect through a template data source named by
+<code>*default-sqlite-dsn*</code>, <code>*default-access-dsn*</code>, … (the driver comes from the
+template, the file or server from the arguments). <code>connect-sqlite</code> uses the ANSI encoding
+UTF-8. Only <code>connect-sqlite</code> is covered by the tests.</p>
+
+<h2 id="transactions">5. Transactions</h2>
+<p>qss-cl-odbc switches autocommit <em>off</em> when connecting: every change needs
+<code>(commit con)</code>, and <code>close-connection</code> rolls back.</p>
+<p>Consequence: with autocommit off, even a SELECT opens a transaction that stays open until
+<code>commit</code> or <code>rollback</code>. SQLite then blocks writers on other connections; Access may
+show a second connection an old state. For connections that only read, keep autocommit on:</p>
+<pre><code>(let ((qss-cl-odbc:*connect-autocommit* t))
+  (qss-cl-odbc:connect-generic :dsn "TESTDB"))</code></pre>
+<div class="sig">commit connection / rollback connection<span class="kind">functions</span></div>
+
+<h2 id="execute">6. Executing SQL</h2>
+<p>All functions take the connection, the SQL text with <code>?</code> for parameters, and the parameters
+(<a href="#parameters">section 8</a>). The <code>*</code> variants take the parameters as one list.</p>
+
+<div class="sig">exec-query connection sql &amp;rest parameters / exec-query*<span class="kind">function</span></div>
+<p>For a statement returning rows. For each result set two values: the rows (a list of lists) and
+the column names.</p>
+
+<div class="sig">exec-update connection sql &amp;rest parameters / exec-update*<span class="kind">function</span></div>
+<p>Returns the number of affected rows.</p>
+
+<div class="sig">exec-command connection sql &amp;rest parameters / exec-command*<span class="kind">function</span></div>
+<p>Returns the values of the output and input/output parameters as multiple values (none for a
+plain command).</p>
+
+<div class="sig">exec-sql connection sql &amp;rest parameters / exec-sql*<span class="kind">function</span></div>
+<p>The general form. Three values: the row count, a list of result sets (each a list of rows and
+column names), the list of output parameter values. A text with several statements returns
+several result sets where the driver supports it (PostgreSQL yes, SQLite no).</p>
+
+<h2 id="rows">7. Row by row</h2>
+<div class="sig">do-query ((&amp;rest variables) connection sql &amp;rest parameters) &amp;body body<span class="kind">macro</span></div>
+<p>Executes <code>body</code> once per row with the variables bound to the columns; only the current row
+is in memory. <code>(return value)</code> leaves early; the statement is freed also on
+<code>return</code> and on errors. Values: the number of rows and the column names (or the value of
+<code>return</code>). First result set only.</p>
+<div class="sig">map-query function connection sql &amp;rest parameters / map-query*<span class="kind">function</span></div>
+<p>Calls <code>function</code> with each row (a list). Values as <code>do-query</code>.</p>
+
+<h2 id="parameters">8. Parameters</h2>
+<p>A parameter is either a value, whose type qss-cl-odbc derives, or a list
+<code>(value type [direction [arguments…]])</code>; direction is <code>:in</code> (default), <code>:out</code>
+or <code>:inout</code>. Examples: <code>("abc" :string :in 100)</code>, <code>(nil :integer :out)</code>,
+<code>(12345/100 :decimal :in 19 2)</code>.</p>
+
+<h3>Derived types</h3>
+<table>
+  <tr><th>Lisp value</th><th>Type</th></tr>
+  <tr><td>string</td><td><code>:unicode-string</code></td></tr>
+  <tr><td>integer in 32 bit</td><td><code>:integer</code></td></tr>
+  <tr><td>other integer, ratio</td><td><code>:decimal</code> (precision and scale from the value; a ratio that is no finite decimal is an error)</td></tr>
+  <tr><td>float</td><td><code>:double</code></td></tr>
+  <tr><td>vector of octets</td><td><code>:binary</code></td></tr>
+  <tr><td>NIL</td><td>NULL</td></tr>
+  <tr><td>value accepted by <code>*date-type-predicate*</code></td><td><code>:date</code></td></tr>
+</table>
+<p>A universal time is an integer and becomes <code>:integer</code>; pass dates as <code>(ut :date)</code>.</p>
+
+<h3>Parameter types</h3>
+<table>
+  <tr><th>Type</th><th>Lisp value</th><th>SQL type</th><th>Arguments</th></tr>
+  <tr><td><code>:unicode-string</code></td><td>string</td><td>SQL_WVARCHAR</td><td>length (UTF-16 units; default: of the value)</td></tr>
+  <tr><td><code>:string</code></td><td>string, ANSI encoding of the connection</td><td>SQL_VARCHAR</td><td>length (bytes)</td></tr>
+  <tr><td><code>:integer</code></td><td>integer, 32 bit</td><td>SQL_INTEGER</td><td></td></tr>
+  <tr><td><code>:double</code></td><td>real, as double-float</td><td>SQL_DOUBLE</td><td></td></tr>
+  <tr><td><code>:decimal</code></td><td>rational (exact)</td><td>SQL_NUMERIC</td><td>precision, scale</td></tr>
+  <tr><td><code>:date</code></td><td>universal time</td><td>SQL_TYPE_TIMESTAMP</td><td></td></tr>
+  <tr><td><code>:binary</code></td><td>octet vector</td><td>SQL_VARBINARY</td><td>length</td></tr>
+  <tr><td><code>:uclob</code> (<code>:unicode-clob</code>)</td><td>long string, sent in parts</td><td>SQL_WLONGVARCHAR</td><td></td></tr>
+  <tr><td><code>:clob</code></td><td>long string, ANSI encoding</td><td>SQL_LONGVARCHAR</td><td></td></tr>
+  <tr><td><code>:blob</code></td><td>long octet vector</td><td>SQL_LONGVARBINARY</td><td></td></tr>
+</table>
+<p>The LOB types are input only. Output parameters work with drivers that support them, e.g.
+PostgreSQL functions with OUT/INOUT parameters through <code>{call f(?, ?)}</code>; Access and SQLite
+have none.</p>
+
+<h2 id="prepared">9. Prepared statements</h2>
+<div class="sig">prepare-statement connection sql &amp;rest parameter-specs<span class="kind">function</span></div>
+<p>Each spec is a type keyword (direction <code>:in</code>) or a list <code>(type direction arguments…)</code>.</p>
+<div class="sig">exec-prepared-query statement &amp;rest values<span class="kind">function</span></div>
+<p>Rows and column names of the first result set. The column layout is cached: if it changes
+between executions, prepare again.</p>
+<div class="sig">exec-prepared-update statement &amp;rest values<span class="kind">function</span></div>
+<p>Number of affected rows (NIL if the driver does not know).</p>
+<div class="sig">exec-prepared-command statement &amp;rest values<span class="kind">function</span></div>
+<p>Values for the <code>:in</code>/<code>:inout</code> parameters; returns a <em>list</em> of the output values.</p>
+<div class="sig">free-statement statement<span class="kind">function</span></div>
+<div class="sig">with-prepared-statement (variable connection sql &amp;rest parameter-specs) &amp;body body<span class="kind">macro</span></div>
+<p>Prepares, executes <code>body</code>, frees the statement.</p>
+
+<h2 id="results">10. Result values</h2>
+<table>
+  <tr><th>SQL type</th><th>Lisp value</th></tr>
+  <tr><td>CHAR, VARCHAR, LONGVARCHAR (also W…)</td><td>string (read as UTF-16)</td></tr>
+  <tr><td>INTEGER, SMALLINT, TINYINT, BIT, BIGINT</td><td>integer</td></tr>
+  <tr><td>NUMERIC, DECIMAL (Access CURRENCY)</td><td>rational; double-float with <code>*decimal-as-rational*</code> NIL</td></tr>
+  <tr><td>FLOAT, DOUBLE, REAL</td><td>double-float</td></tr>
+  <tr><td>TIMESTAMP, DATE</td><td>universal time (<a href="#dates">section 11</a>)</td></tr>
+  <tr><td>TIME</td><td>string <code>"hh:mm:ss"</code></td></tr>
+  <tr><td>BINARY, VARBINARY, LONGVARBINARY, GUID</td><td>vector of (unsigned-byte 8)</td></tr>
+  <tr><td>NULL</td><td>NIL</td></tr>
+  <tr><td>other</td><td>string</td></tr>
+</table>
+<p>Long columns (LONGVARCHAR, LONGVARBINARY) are read with SQLGetData. ODBC allows SQLGetData only for
+columns after the last bound one unless the driver says otherwise; put long columns last, or set
+<code>use-bind-column</code> to NIL.</p>
+
+<h2 id="dates">11. Dates and times</h2>
+<p>Dates are universal times. Databases store a wall clock time without zone; qss-cl-odbc maps it
+1:1 to a universal time read as UTC (<code>*date-time-zone*</code> = 0). A local time zone would
+shift times on the days of the daylight saving changes (02:30 became 03:30).</p>
+<div class="sig">encode-date year month day &amp;optional hour minute second<span class="kind">function</span></div>
+<div class="sig">decode-date universal-time<span class="kind">function</span></div>
+<p>Build and take apart date values with these, not with <code>encode-universal-time</code> (local zone).
+Both work before 1900 (Access stores a time of day as 1899-12-30).
+<code>(setf *date-time-zone* nil)</code> restores the old behaviour (local zone).</p>
+<p>Other date types: <code>*universal-time-to-date-dataype*</code> (sic) converts read values,
+<code>*date-datatype-to-universal-time*</code> converts parameters, <code>*date-type-predicate*</code>
+recognizes your date objects for derived parameters.</p>
+
+<h2 id="text">12. Text and encodings</h2>
+<p>SQL text, column names, messages, strings and <code>:unicode-string</code>/<code>:uclob</code> parameters
+travel as UTF-16, independent of any code page. Characters beyond U+FFFF (e.g. emoji) are
+handled; lengths count UTF-16 units.</p>
+<p>Only <code>:string</code> and <code>:clob</code> parameters use the ANSI interface (SQL_C_CHAR). Its encoding
+belongs to the driver, not to the operating system: Access on Windows wants the ANSI code page
+(<code>:cp1252</code> in Western Europe), the SQLite ODBC driver always UTF-8. Each connection has its own
+(<code>:ansi-encoding</code> of <code>connect-generic</code>; default <code>*ansi-encoding*</code> at connect time:
+<code>:cp1252</code> on Windows, <code>:utf-8</code> elsewhere). Prefer plain strings; use <code>:string</code> only for
+drivers without Unicode.</p>
+
+<h2 id="catalog">13. Catalog functions</h2>
+<p>Wrappers of the ODBC catalog functions; NIL means “not given”. Results as <code>exec-query</code>;
+the columns are those of the ODBC function.</p>
+<div class="sig">get-tables connection catalog schema table table-type<span class="kind">function</span></div>
+<div class="sig">get-columns connection catalog schema table column<span class="kind">function</span></div>
+<div class="sig">get-primary-keys connection catalog schema table<span class="kind">function</span></div>
+<div class="sig">get-foreign-keys connection pk-catalog pk-schema pk-table fk-catalog fk-schema fk-table<span class="kind">function</span></div>
+<p>Not every driver implements all of them; then an <code>sql-error</code> is signalled and the
+connection stays usable. The tests print which ones the driver lacks.</p>
+
+<h2 id="errors">14. Errors and warnings</h2>
+<p>A failed call signals <code>sql-error</code>. A call that succeeds with information (SQL_SUCCESS_WITH_INFO,
+e.g. data truncated) signals <code>sql-warning</code> with <code>warn</code>. Both are <code>sql-condition</code>s:</p>
+<table>
+  <tr><th>Reader</th><th>Value</th></tr>
+  <tr><td><code>sql-condition-message</code></td><td>the messages of all diagnostic records, joined with “ | ”</td></tr>
+  <tr><td><code>sql-condition-state</code></td><td>SQLSTATE of the first record, e.g. <code>"42S02"</code></td></tr>
+  <tr><td><code>sql-condition-native-error</code></td><td>error number of the database</td></tr>
+  <tr><td><code>sql-condition-diagnostics</code></td><td>all records: list of <code>(sqlstate native-error message)</code></td></tr>
+</table>
+<p>Messages are read completely, also when longer than the first buffer. qss-cl-odbc asks with a buffer of
+8190 characters first: psqlODBC splits long messages into several records counted in UTF-8 bytes and loses
+the text when the cut falls into an umlaut (see <a href="notes.html">notes.html</a>).</p>
+
+<h2 id="variables">15. Variables</h2>
+<table>
+  <tr><th>Variable</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>*connect-autocommit*</code></td><td>NIL</td><td>T keeps autocommit on for new connections</td></tr>
+  <tr><td><code>*ansi-encoding*</code></td><td><code>:cp1252</code> (Windows), <code>:utf-8</code></td><td>ANSI encoding for new connections</td></tr>
+  <tr><td><code>*decimal-as-rational*</code></td><td>T</td><td>NUMERIC/DECIMAL as rationals</td></tr>
+  <tr><td><code>*date-time-zone*</code></td><td>0</td><td>zone for date values; NIL: local</td></tr>
+  <tr><td><code>*odbc-library-file*</code></td><td>NIL</td><td>driver manager library, set before loading</td></tr>
+  <tr><td><code>*default-access-dsn*</code> etc.</td><td></td><td>template data sources of the connect shortcuts</td></tr>
+</table>
+
+<h2 id="lowlevel">16. The ODBC layer and its generator</h2>
+<p>The constants, types, structures and function declarations of the ODBC API are not written by hand.
+<code>src/odbc/odbc-api-generated.lisp</code> is generated from Microsoft's ODBC headers in
+<code>odbc-headers/</code> (MIT license, from
+<a href="https://github.com/microsoft/ODBC-Specification">microsoft/ODBC-Specification</a>) by
+<code>tools/generate-odbc-api.lisp</code>, according to <code>tools/odbc-api-spec.lisp</code>. The generator
+is plain Lisp with a small C preprocessor; it reads the headers with and without
+<code>_WIN64</code> and makes the types and constants that differ pointer-sized.</p>
+<pre><code>(asdf:load-system :qss-cl-odbc-generate)
+(qss-cl-odbc-generate:generate)            ; after changing the spec
+(asdf:load-system :qss-cl-odbc)            ; then the cross-check
+(qss-cl-odbc-generate:check :cc "gcc")     ; with a C compiler</code></pre>
+<p><code>check</code> compiles a program against the ODBC headers of the platform (unixODBC, iODBC, mingw-w64
+under MSYS2, the Windows SDK) and compares every constant, the size and signedness of every type,
+the layout of every structure and every function prototype. Without a compiler it is skipped.
+The test <code>generated-file-is-current</code> ensures the shipped file matches the generator.</p>
+<p>Constants can be left out in the spec (<code>:exclude-constants</code>), each group with its reason,
+which is also written into the generated file. Left out are <code>SQL_SPEC_*</code> (Microsoft's repository
+has the ODBC 4.0 draft value 4.00 regardless of <code>ODBCVER</code>) and
+<code>SQL_OPT_TRACE_FILE_DEFAULT</code> (each driver manager has its own default path).</p>
+<p>Checked against three independent sets of headers (2026-10-14): Microsoft's, through the generator;
+unixODBC 2.3.12 with gcc under Linux; mingw-w64 with gcc under Windows (MSYS2). All types, structures,
+prototypes and used constants agree. The one remaining difference is unixODBC's
+<code>SQL_API_SQLCANCELHANDLE</code> (1022; Microsoft and mingw-w64: 1550), which qss-cl-odbc does not use.</p>
+<p>The calls themselves (<code>src/odbc/odbc-calls.lisp</code>) check every return code and collect
+the diagnostics.</p>
+
+<h2 id="c-to-lisp">17. From C to Lisp</h2>
+<p>The same small program three times, in <code>doc/examples/</code>: connect, create a table, insert two
+rows through a prepared statement with parameters, read them back, read the diagnostics of a failing
+statement. All three print the same (SQLite, data source <code>EXAMPLE</code>):</p>
+<pre><code>1: Ana
+2: Bo
+error HY000: [SQLite]no such table: no_such_table (1)</code></pre>
+
+<h3>(a) C, the ODBC API</h3>
+<p>Text through the Unicode functions as in qss-cl-odbc; every call checked.
+<code>cc example.c -lodbc</code> (Linux/macOS) or <code>gcc example.c -lodbc32</code> (MSYS2).</p>
+<pre><code>/* qss-cl-odbc documentation, example (a): the ODBC API from C.
+ *
+ * Connects to a data source, creates a table, inserts two rows through a
+ * prepared statement with parameters, reads them back, and shows the
+ * diagnostics of a failing statement. Text goes through the Unicode (...W)
+ * functions, as in qss-cl-odbc.
+ *
+ *   Linux/macOS:     cc example.c -lodbc -o example &amp;&amp; ./example EXAMPLE
+ *   Windows (MSYS2): gcc example.c -lodbc32 -o example.exe &amp;&amp; ./example EXAMPLE
+ *
+ * Copyright (c) 2026 QSS / Friedrich Dominicus, BSD license (see license.txt)
+ */
+#if defined(_WIN32)
+#include &lt;windows.h&gt;
+#endif
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;sql.h&gt;
+#include &lt;sqlext.h&gt;
+
+/* ASCII text -&gt; SQLWCHAR (UTF-16); enough for this example */
+static SQLWCHAR *w(const char *s)
+{
+    static SQLWCHAR buf[4][512];
+    static int next = 0;
+    SQLWCHAR *out = buf[next++ % 4];
+    int i = 0;
+    for (; s[i] &amp;&amp; i &lt; 511; i++) out[i] = (SQLWCHAR)(unsigned char)s[i];
+    out[i] = 0;
+    return out;
+}
+
+/* SQLWCHAR (UTF-16, ASCII part) -&gt; char, for printing */
+static const char *a(const SQLWCHAR *s)
+{
+    static char buf[4][1024];
+    static int next = 0;
+    char *out = buf[next++ % 4];
+    int i = 0;
+    for (; s[i] &amp;&amp; i &lt; 1023; i++) out[i] = s[i] &lt; 128 ? (char)s[i] : &#x27;?&#x27;;
+    out[i] = 0;
+    return out;
+}
+
+/* Every call is checked: on SQL_ERROR print all diagnostic records and stop. */
+static void check(SQLRETURN rc, SQLSMALLINT type, SQLHANDLE handle, const char *what)
+{
+    if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO || rc == SQL_NO_DATA) return;
+    SQLWCHAR state[6], message[1024];
+    SQLINTEGER native;
+    SQLSMALLINT length;
+    for (SQLSMALLINT rec = 1;
+         SQL_SUCCEEDED(SQLGetDiagRecW(type, handle, rec, state, &amp;native, message, 1024, &amp;length));
+         rec++)
+        fprintf(stderr, &quot;%s: [%s] %s\n&quot;, what, a(state), a(message));
+    exit(1);
+}
+
+int main(int argc, char **argv)
+{
+    const char *dsn = argc &gt; 1 ? argv[1] : &quot;EXAMPLE&quot;;
+    char connection[256];
+    SQLHENV env = SQL_NULL_HENV;
+    SQLHDBC dbc = SQL_NULL_HDBC;
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+
+    /* environment and connection */
+    check(SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &amp;env), SQL_HANDLE_ENV, env, &quot;env&quot;);
+    check(SQLSetEnvAttr(env, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0),
+          SQL_HANDLE_ENV, env, &quot;version&quot;);
+    check(SQLAllocHandle(SQL_HANDLE_DBC, env, &amp;dbc), SQL_HANDLE_ENV, env, &quot;dbc&quot;);
+    snprintf(connection, sizeof connection, &quot;DSN=%s&quot;, dsn);
+    check(SQLDriverConnectW(dbc, NULL, w(connection), SQL_NTS, NULL, 0, NULL, SQL_DRIVER_NOPROMPT),
+          SQL_HANDLE_DBC, dbc, &quot;connect&quot;);
+    check(SQLAllocHandle(SQL_HANDLE_STMT, dbc, &amp;stmt), SQL_HANDLE_DBC, dbc, &quot;stmt&quot;);
+
+    /* a table */
+    SQLExecDirectW(stmt, w(&quot;DROP TABLE IF EXISTS person&quot;), SQL_NTS);
+    check(SQLExecDirectW(stmt, w(&quot;CREATE TABLE person (id INTEGER PRIMARY KEY, name VARCHAR(50))&quot;), SQL_NTS),
+          SQL_HANDLE_STMT, stmt, &quot;create&quot;);
+
+    /* prepared INSERT with two parameters, executed twice */
+    SQLINTEGER id;
+    SQLWCHAR name[51];
+    SQLLEN id_ind = 0, name_ind = SQL_NTS;
+    check(SQLPrepareW(stmt, w(&quot;INSERT INTO person (id, name) VALUES (?, ?)&quot;), SQL_NTS),
+          SQL_HANDLE_STMT, stmt, &quot;prepare&quot;);
+    check(SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &amp;id, 0, &amp;id_ind),
+          SQL_HANDLE_STMT, stmt, &quot;bind 1&quot;);
+    check(SQLBindParameter(stmt, 2, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR, 50, 0, name,
+                           sizeof name, &amp;name_ind),
+          SQL_HANDLE_STMT, stmt, &quot;bind 2&quot;);
+    const char *names[] = {&quot;Ana&quot;, &quot;Bo&quot;};
+    for (int i = 0; i &lt; 2; i++) {
+        id = i + 1;
+        SQLWCHAR *n = w(names[i]);
+        int k = 0;
+        for (; n[k]; k++) name[k] = n[k];
+        name[k] = 0;
+        check(SQLExecute(stmt), SQL_HANDLE_STMT, stmt, &quot;insert&quot;);
+    }
+    check(SQLFreeStmt(stmt, SQL_RESET_PARAMS), SQL_HANDLE_STMT, stmt, &quot;reset&quot;);
+    check(SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_COMMIT), SQL_HANDLE_DBC, dbc, &quot;commit&quot;);
+
+    /* SELECT, read row by row with SQLGetData */
+    check(SQLExecDirectW(stmt, w(&quot;SELECT id, name FROM person ORDER BY id&quot;), SQL_NTS),
+          SQL_HANDLE_STMT, stmt, &quot;select&quot;);
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        SQLINTEGER rid;
+        SQLWCHAR rname[51];
+        SQLLEN ind;
+        check(SQLGetData(stmt, 1, SQL_C_SLONG, &amp;rid, 0, &amp;ind), SQL_HANDLE_STMT, stmt, &quot;id&quot;);
+        check(SQLGetData(stmt, 2, SQL_C_WCHAR, rname, sizeof rname, &amp;ind), SQL_HANDLE_STMT, stmt, &quot;name&quot;);
+        printf(&quot;%d: %s\n&quot;, (int)rid, a(rname));
+    }
+    check(SQLFreeStmt(stmt, SQL_CLOSE), SQL_HANDLE_STMT, stmt, &quot;close&quot;);
+
+    /* a failing statement: read its diagnostics */
+    if (SQLExecDirectW(stmt, w(&quot;SELECT * FROM no_such_table&quot;), SQL_NTS) == SQL_ERROR) {
+        SQLWCHAR state[6], message[1024];
+        SQLINTEGER native;
+        SQLSMALLINT length;
+        SQLGetDiagRecW(SQL_HANDLE_STMT, stmt, 1, state, &amp;native, message, 1024, &amp;length);
+        printf(&quot;error %s: %s\n&quot;, a(state), a(message));
+    }
+
+    /* clean up */
+    SQLExecDirectW(stmt, w(&quot;DROP TABLE person&quot;), SQL_NTS);
+    SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_COMMIT);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    SQLDisconnect(dbc);
+    SQLFreeHandle(SQL_HANDLE_DBC, dbc);
+    SQLFreeHandle(SQL_HANDLE_ENV, env);
+    return 0;
+}
+</code></pre>
+
+<h3>(b1) Common Lisp, line by line</h3>
+<p>The C program translated to the generated declarations: each <code>%%sql-…</code> is the C function of
+the same name, each <code>$SQL_…</code> the C constant, <code>cffi:with-foreign-objects</code> the local
+C variables. This is the layer qss-cl-odbc is built on.</p>
+<pre><code>;;; -*- Mode: Lisp -*-
+;;; qss-cl-odbc documentation, example (b1): example.c translated line by line
+;;; to Common Lisp, on the declarations generated from the ODBC headers
+;;; (%%SQL-... = the C function, $SQL_... = the C constant). This is the level
+;;; below qss-cl-odbc; normally you write example.lisp instead.
+;;;
+;;;   (asdf:load-system :qss-cl-odbc)
+;;;   (load &quot;doc/examples/example-raw.lisp&quot;)
+;;;   (qss-cl-odbc::example-raw &quot;EXAMPLE&quot;)
+;;;
+;;; Copyright (c) 2026 QSS / Friedrich Dominicus, BSD license (see license.txt)
+
+(in-package :qss-cl-odbc)
+
+(defun example-check (rc type handle what)
+  &quot;check() of example.c: on SQL_ERROR print all diagnostic records and stop.&quot;
+  (unless (member rc (list $SQL_SUCCESS $SQL_SUCCESS_WITH_INFO $SQL_NO_DATA))
+    (cffi:with-foreign-objects ((state :uint16 6) (native &#x27;sql-integer)
+                                (message :uint16 1024) (len &#x27;sql-small-int))
+      (loop for rec from 1
+            while (member (%%sql-get-diag-rec-w type handle rec state native message 1024 len)
+                          (list $SQL_SUCCESS $SQL_SUCCESS_WITH_INFO))
+            do (format *error-output* &quot;~A: [~A] ~A~%&quot; what
+                       (get-wide-string-nts state) (get-wide-string-nts message))))
+    (error &quot;~A failed&quot; what)))
+
+(defun example-raw (&amp;optional (dsn &quot;EXAMPLE&quot;))
+  (cffi:with-foreign-objects ((penv :pointer) (pdbc :pointer) (pstmt :pointer))
+    ;; environment and connection
+    (example-check (%%sql-alloc-handle $SQL_HANDLE_ENV (cffi:null-pointer) penv)
+                   $SQL_HANDLE_ENV (cffi:null-pointer) &quot;env&quot;)
+    (let ((env (cffi:mem-ref penv :pointer)))
+      (example-check (%%sql-set-env-attr env $SQL_ATTR_ODBC_VERSION (cffi:make-pointer $SQL_OV_ODBC3) 0)
+                     $SQL_HANDLE_ENV env &quot;version&quot;)
+      (example-check (%%sql-alloc-handle $SQL_HANDLE_DBC env pdbc) $SQL_HANDLE_ENV env &quot;dbc&quot;)
+      (let ((dbc (cffi:mem-ref pdbc :pointer)))
+        (with-wide-string (connection (format nil &quot;DSN=~A&quot; dsn))
+          (example-check (%%sql-driver-connect-w dbc (cffi:null-pointer) connection $SQL_NTS
+                                                 (cffi:null-pointer) 0 (cffi:null-pointer)
+                                                 $SQL_DRIVER_NOPROMPT)
+                         $SQL_HANDLE_DBC dbc &quot;connect&quot;))
+        (example-check (%%sql-alloc-handle $SQL_HANDLE_STMT dbc pstmt) $SQL_HANDLE_DBC dbc &quot;stmt&quot;)
+        (let ((stmt (cffi:mem-ref pstmt :pointer)))
+          (flet ((exec (sql what)
+                   (with-wide-string (text sql)
+                     (example-check (%%sql-exec-direct-w stmt text $SQL_NTS)
+                                    $SQL_HANDLE_STMT stmt what))))
+            ;; a table
+            (with-wide-string (text &quot;DROP TABLE IF EXISTS person&quot;)
+              (%%sql-exec-direct-w stmt text $SQL_NTS))
+            (exec &quot;CREATE TABLE person (id INTEGER PRIMARY KEY, name VARCHAR(50))&quot; &quot;create&quot;)
+
+            ;; prepared INSERT with two parameters, executed twice
+            (cffi:with-foreign-objects ((id &#x27;sql-integer) (name :uint16 51)
+                                        (id-ind &#x27;sql-len) (name-ind &#x27;sql-len))
+              (setf (cffi:mem-ref id-ind &#x27;sql-len) 0
+                    (cffi:mem-ref name-ind &#x27;sql-len) $SQL_NTS)
+              (with-wide-string (text &quot;INSERT INTO person (id, name) VALUES (?, ?)&quot;)
+                (example-check (%%sql-prepare-w stmt text $SQL_NTS) $SQL_HANDLE_STMT stmt &quot;prepare&quot;))
+              (example-check (%%sql-bind-parameter stmt 1 $SQL_PARAM_INPUT $SQL_C_SLONG $SQL_INTEGER
+                                                   0 0 id 0 id-ind)
+                             $SQL_HANDLE_STMT stmt &quot;bind 1&quot;)
+              (example-check (%%sql-bind-parameter stmt 2 $SQL_PARAM_INPUT $SQL_C_WCHAR $SQL_WVARCHAR
+                                                   50 0 name (* 2 51) name-ind)
+                             $SQL_HANDLE_STMT stmt &quot;bind 2&quot;)
+              (loop for n in &#x27;(&quot;Ana&quot; &quot;Bo&quot;)
+                    for i from 1
+                    do (setf (cffi:mem-ref id &#x27;sql-integer) i)
+                       (%put-unicode-string name n) ; UTF-16 with terminating 0
+                       (example-check (%%sql-execute stmt) $SQL_HANDLE_STMT stmt &quot;insert&quot;)))
+            (example-check (%%sql-free-stmt stmt $SQL_RESET_PARAMS) $SQL_HANDLE_STMT stmt &quot;reset&quot;)
+            (example-check (%%sql-end-tran $SQL_HANDLE_DBC dbc $SQL_COMMIT) $SQL_HANDLE_DBC dbc &quot;commit&quot;)
+
+            ;; SELECT, read row by row with SQLGetData
+            (exec &quot;SELECT id, name FROM person ORDER BY id&quot; &quot;select&quot;)
+            (cffi:with-foreign-objects ((rid &#x27;sql-integer) (rname :uint16 51) (ind &#x27;sql-len))
+              (loop while (= (%%sql-fetch stmt) $SQL_SUCCESS)
+                    do (example-check (%%sql-get-data stmt 1 $SQL_C_SLONG rid 0 ind)
+                                      $SQL_HANDLE_STMT stmt &quot;id&quot;)
+                       (example-check (%%sql-get-data stmt 2 $SQL_C_WCHAR rname (* 2 51) ind)
+                                      $SQL_HANDLE_STMT stmt &quot;name&quot;)
+                       (format t &quot;~D: ~A~%&quot; (cffi:mem-ref rid &#x27;sql-integer) (get-wide-string-nts rname))))
+            (example-check (%%sql-free-stmt stmt $SQL_CLOSE) $SQL_HANDLE_STMT stmt &quot;close&quot;)
+
+            ;; a failing statement: read its diagnostics
+            (with-wide-string (text &quot;SELECT * FROM no_such_table&quot;)
+              (when (= (%%sql-exec-direct-w stmt text $SQL_NTS) $SQL_ERROR)
+                (cffi:with-foreign-objects ((state :uint16 6) (native &#x27;sql-integer)
+                                            (message :uint16 1024) (len &#x27;sql-small-int))
+                  (%%sql-get-diag-rec-w $SQL_HANDLE_STMT stmt 1 state native message 1024 len)
+                  (format t &quot;error ~A: ~A~%&quot; (get-wide-string-nts state) (get-wide-string-nts message)))))
+
+            ;; clean up
+            (with-wide-string (text &quot;DROP TABLE person&quot;)
+              (%%sql-exec-direct-w stmt text $SQL_NTS))
+            (%%sql-end-tran $SQL_HANDLE_DBC dbc $SQL_COMMIT)
+            (%%sql-free-handle $SQL_HANDLE_STMT stmt)))
+        (%%sql-disconnect dbc)
+        (%%sql-free-handle $SQL_HANDLE_DBC dbc))
+      (%%sql-free-handle $SQL_HANDLE_ENV env)))
+  (values))
+</code></pre>
+
+<h3>(b2) Common Lisp with qss-cl-odbc</h3>
+<p>The same with qss-cl-odbc: no handles, buffers or indicators; text is encoded and decoded; errors become
+<code>sql-error</code> conditions.</p>
+<pre><code>;;; -*- Mode: Lisp -*-
+;;; qss-cl-odbc documentation, example (b2): what example.c does, with
+;;; qss-cl-odbc. Errors are signalled as QSS-CL-ODBC:SQL-ERROR; handles,
+;;; buffers, encodings and diagnostics are handled by qss-cl-odbc.
+;;;
+;;;   (asdf:load-system :qss-cl-odbc)
+;;;   (load &quot;doc/examples/example.lisp&quot;)
+;;;   (example &quot;EXAMPLE&quot;)
+;;;
+;;; Copyright (c) 2026 QSS / Friedrich Dominicus, BSD license (see license.txt)
+
+(defun example (&amp;optional (dsn &quot;EXAMPLE&quot;))
+  (let ((con (qss-cl-odbc:connect-generic :dsn dsn)))
+    (unwind-protect
+         (progn
+           ;; PostgreSQL answers with a notice when the table does not exist:
+           ;; a QSS-CL-ODBC:SQL-WARNING, muffled here
+           (handler-bind ((qss-cl-odbc:sql-warning #&#x27;muffle-warning))
+             (qss-cl-odbc:exec-command con &quot;DROP TABLE IF EXISTS person&quot;))
+           (qss-cl-odbc:exec-command con &quot;CREATE TABLE person (id INTEGER PRIMARY KEY, name VARCHAR(50))&quot;)
+           ;; prepared INSERT with two parameters, executed twice
+           (qss-cl-odbc:with-prepared-statement
+               (insert con &quot;INSERT INTO person (id, name) VALUES (?, ?)&quot;
+                       &#x27;(:integer :in) &#x27;(:unicode-string :in 50))
+             (loop for name in &#x27;(&quot;Ana&quot; &quot;Bo&quot;)
+                   for id from 1
+                   do (qss-cl-odbc:exec-prepared-update insert id name)))
+           (qss-cl-odbc:commit con)
+           ;; SELECT, row by row
+           (qss-cl-odbc:do-query ((id name) con &quot;SELECT id, name FROM person ORDER BY id&quot;)
+             (format t &quot;~D: ~A~%&quot; id name))
+           ;; a failing statement
+           (handler-case (qss-cl-odbc:exec-query con &quot;SELECT * FROM no_such_table&quot;)
+             (qss-cl-odbc:sql-error (e)
+               (format t &quot;error ~A: ~A~%&quot; (qss-cl-odbc:sql-condition-state e)
+                       (qss-cl-odbc:sql-condition-message e))))
+           (qss-cl-odbc:exec-command con &quot;DROP TABLE person&quot;)
+           (qss-cl-odbc:commit con))
+      (qss-cl-odbc:close-connection con)))
+  (values))
+</code></pre>
+
+<h2 id="tests">18. Tests</h2>
+<pre><code>(asdf:load-system :qss-cl-odbc-test)
+(qss-cl-odbc-test:run-all :dsn "TESTDB")   ; or (asdf:test-system :qss-cl-odbc)
+                                              ; DSN also from QSS_ODBC_DSN</code></pre>
+<p>Unit tests need no database. The integration tests create and drop their own tables
+(<code>qss_odbc_…</code>) on the given data source; use an empty database. Driver peculiarities are
+features per database (e.g. <code>:driver-rounds-doubles</code> for SQLite); tests that do not apply are
+skipped with the reason. Cases are taken from the test suites of racket/db, pyodbc, psqlodbc and
+odbc-api. <code>qss-patches.txt</code> records the changes and the test runs.</p>
+<p>The suite <code>:chinook</code> runs on the Chinook sample database and only reads. It contains the
+cases of the Chinook project's own test suite (row counts, last record of each table, eleven
+customers with non-ASCII names, invoice totals against their lines), with typed values: on
+databases with exact decimals the totals must match without rounding. Further cases cover Unicode
+parameters, row-by-row reading, sums beyond 32 bit, joins and foreign keys. Without a DSN it runs on
+the SQLite copy in <code>src/test/chinook/</code> (driver from <code>QSS_SQLITE_ODBC_DRIVER</code>, default
+<code>SQLite3</code>); for other databases load the Chinook script and name the data source:</p>
+<pre><code>(qss-cl-odbc-test:run-chinook)                   ; the SQLite copy
+(qss-cl-odbc-test:run-chinook :dsn "CHINOOK")    ; or QSS_CHINOOK_DSN; snake_case schemas work too</code></pre>
+
+<h2 id="history">19. History and license</h2>
+<p>qss-cl-odbc is derived from plain-odbc, written by Roland Averkamp in 2005 (BSD license); David Owen adapted it to 64-bit Linux.
+Its lowest layer came from Paul Meurer's SQL/ODBC module (1999–2001). In 2026 QSS / Friedrich
+Dominicus moved it to ODBC 3.5, Unicode and 64-bit Windows, fixed a number of errors (see
+<code>qss-patches.txt</code>), added the test suite and replaced the lowest layer by declarations
+generated from Microsoft's ODBC headers; no code of the earlier lowest layer remains.
+On 2026-11-03 the QSS version was renamed from plain-odbc to qss-cl-odbc (system and package
+<code>QSS-CL-ODBC</code>) so that it can live next to the original; apart from the name the interface
+is unchanged. License: <code>license.txt</code>.</p>
+
+</body>
+</html>

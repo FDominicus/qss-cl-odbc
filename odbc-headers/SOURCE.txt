@@ -1,0 +1,10 @@
+ODBC header files from Microsoft's ODBC specification repository, unchanged.
+
+  Repository: https://github.com/microsoft/ODBC-Specification
+  Directory:  Windows/inc
+  Commit:     4dda95986bda5d3b55d7749315d3e5a0951c1e50 (2023-06-13)
+  License:    MIT, see LICENSE-Microsoft.txt
+
+They are the single source for the constants, types, structures and function
+declarations in src/odbc/odbc-api-generated.lisp; tools/generate-odbc-api.lisp
+reads them. They are not needed to load qss-cl-odbc.

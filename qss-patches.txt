@@ -1,0 +1,522 @@
+qss-cl-odbc -- Aenderungen gegenueber plain-odbc (Windows 64 Bit, SBCL, ODBC 3.5)
+==================================================================================
+
+Bis 03.11.2026 hiess diese Fassung "plain-odbc, QSS-Fassung" (System und Paket
+PLAIN-ODBC). Die Eintraege unten sind eine Chronik: wo sie plain-odbc nennen,
+meinen sie den Stand von damals. Zur Umbenennung siehe Teil 15 am Ende.
+
+Grundlage: plain-odbc aus dem Zip vom 13.10.2026 (Roland Averkamp).
+Vollstaendiger Unterschied: QSS_plain-odbc-win64.patch
+
+Aenderungen
+-----------
+1. SQLLEN/SQLULEN zeigerbreit (odbc-ff-interface.lisp)
+   Vorher fest 32 Bit. Unter Windows 64 Bit sind es 64 Bit: Indikatorpuffer
+   waren zu klein, Laengen und Data-at-exec-Werte wurden zerstoert.
+   Ebenso ValuePtr von SQLSetConnectAttr.
+2. Datum vor 1900 (odbc-ff-interface.lisp, parameter.lisp)
+   ENCODE-/DECODE-UNIVERSAL-TIME lehnen in SBCL Jahre vor 1900 ab. Access legt
+   reine Uhrzeiten auf 1899-12-30. Neu: ENCODE-UNIVERSAL-TIME* und
+   DECODE-UNIVERSAL-TIME* (Bezug 1901-01-01, Tage selbst gerechnet).
+   Ergebnis: 1899-12-30 08:15 -> Universal Time -146700 und zurueck.
+3. ANSI-Kodierung einstellbar (ffi-support.lisp)
+   *ANSI-ENCODING*, Vorgabe :cp1252 (vorher fest ISO-8859-1, damit kein EUR).
+   Puffer- und Indikatorlaengen jetzt in Bytes statt Zeichen.
+4. Textparameter (odbc-main.lisp, parameter.lisp)
+   - Implizite Strings werden als :unicode-string (SQL_WVARCHAR) gebunden.
+   - Spaltengroesse = Laenge des Werts, mindestens 1 (nie 0 -> kein HY104,
+     nie 8001 bei Access-Textfeldern mit hoechstens 255 Zeichen).
+   - :unicode-string meldet die Spaltengroesse in Zeichen (vorher Bytes).
+   - Zu lange Werte geben einen Fehler statt eines Pufferueberlaufs.
+   - :uclob als Name wie in der Dokumentation (vorher nur :unicode-clob).
+5. NUMERIC/DECIMAL exakt (column.lisp, global.lisp)
+   *DECIMAL-AS-RATIONAL*, Vorgabe T: Waehrung kommt als rationale Zahl
+   (1094,80 -> 5474/5) statt als Double. NIL = altes Verhalten.
+6. Fehlermeldungen (odbc-functions.lisp)
+   Findet SQLError keinen Fehlersatz, steht das jetzt in der Meldung.
+   Vorher: leere Meldung, "State 00000" und nicht beschriebener Speicher
+   als Fehlernummer.
+7. $SQL_SPEC_STRING als DEFPARAMETER (odbc-constants.lisp)
+   DEFCONSTANT mit String bricht in SBCL beim Laden nach dem Uebersetzen ab.
+8. SQLGetInfo mit echter Puffergroesse (odbc-functions.lisp)
+   Fuer Zahlenwerte wurde BufferLength 0 uebergeben. Der Access-Treiber unter
+   Windows lehnt das bei SQL_TXN_CAPABLE ab, ohne Fehlersatz - daran
+   scheiterte connect-generic (gefunden per TRACE am 13.10.2026).
+9. LOB-Parameter mit Spaltengroesse (parameter.lisp, odbc-main.lisp, global.lisp)
+   :clob, :uclob und :blob wurden mit Spaltengroesse 0 gebunden. Der Access-
+   Treiber schneidet Data-at-exec-Werte dann ab (01004 String data, right
+   truncated, danach S1010 Function sequence error). Jetzt: Laenge des Werts
+   bzw. *DEFAULT-LOB-COLUMN-SIZE* (1073741823, wie Access fuer Memo meldet).
+10. *ODBC-LIBRARY-FILE* in defpackage exportiert (plain-odbc-package.lisp, global.lisp)
+   Vorher nachtraeglich per EXPORT; beim Neuladen im laufenden Lisp meldete
+   SBCL eine Paketabweichung, ASDF brach das Uebersetzen ab.
+11. libs/ und plain-odbc-with-libs.asd entfernt
+   Mitgelieferte Kopien von CFFI, babel, alexandria, trivial-features (2008).
+   CFFI und babel kommen aus Quicklisp.
+
+ODBC 3.5 (13.10.2026, Teil 2)
+-----------------------------
+Vorher sprach plain-odbc ODBC 2.10 (1995): SQLAllocEnv, SQLError,
+SQLTransact, ANSI-Funktionen. Jetzt:
+- Handles ueber SQLAllocHandle/SQLFreeHandle, Umgebung meldet sich mit
+  SQL_ATTR_ODBC_VERSION = 3 an.
+- Fehler ueber SQLGetDiagRecW: alle Diagnosesaetze (mit " | " verbunden),
+  SQLSTATE nach ODBC 3 (HY000, 42S02 ...) statt ODBC 2 (S1000 ...).
+- Transaktionen ueber SQLEndTran, Verbindungsattribute ueber SQLSetConnectAttrW.
+- Unicode durchgehend: SQLDriverConnectW, SQLExecDirectW, SQLPrepareW,
+  SQLDescribeColW, SQLGetInfoW, SQLColumnsW/TablesW/PrimaryKeysW/ForeignKeysW.
+  SQL-Text, Spaltennamen und Meldungen gehen als UTF-16, nicht mehr ueber die
+  ANSI-Codepage.
+- Zeichenspalten (CHAR/VARCHAR/LONGVARCHAR) werden immer als SQL_C_WCHAR
+  gelesen; Zeichen ausserhalb von Windows-1252 kommen beim Lesen heil an
+  (vorher nur Windows-1252 bzw. ISO-8859-1).
+- UTF-16 ueber babel: Surrogatpaare (Zeichen jenseits U+FFFF, z. B. Emoji)
+  in Parametern, Spalten und LOBs; LOB-Teile werden erst als Bytes gesammelt
+  und dann gewandelt, ein Paar an einer Teilgrenze bleibt ganz.
+- Datum/Zeit mit den Typcodes von ODBC 3 (SQL_TYPE_TIMESTAMP 93,
+  SQL_TYPE_DATE 91, SQL_TYPE_TIME 92); reine TIME-Spalten kommen als Text.
+  Datumsparameter mit Spaltengroesse 19.
+- :string-Parameter (SQL_C_CHAR) bleiben moeglich und nutzen *ANSI-ENCODING*.
+- Parameterlaengen in den Einheiten des Treibers: UTF-16-Einheiten fuer
+  Unicode-Typen (Emoji zaehlt doppelt), sonst Bytes. Gefunden durch die Tests
+  unter Access (22001 bzw. abgeschnittenes Memo bei Surrogatpaaren).
+- Die Umgebung (henv) wird neu angelegt, wenn sie noch von einer aelteren
+  Fassung im selben Lisp stammt (*ODBC3-ENVIRONMENT-P*); vorher Speicherfehler
+  nach dem Neuladen im laufenden Lisp.
+
+Bekannt: Der SQLite-ODBC-Treiber unter Linux ist ein ANSI-Treiber; unixODBC
+wandelt dort SQL-Text mit Zeichen jenseits Latin-1 verlustbehaftet um
+(Alias "Ωx" wird "©x"). Werte ueber Parameter sind davon nicht betroffen.
+
+Tests (FiveAM)
+--------------
+System plain-odbc-qss-test, Datei src/test/qss-tests.lisp:
+  (asdf:test-system :plain-odbc)
+- Unit (ohne Datenbank): SQLLEN-Breite, Kalender und Universal Time vor 1900,
+  Dezimalzahlen, Parameterlaengen, implizite Unicode-Strings, ANSI-Bytelaengen,
+  UTF-16 mit Surrogatpaaren.
+- Integration gegen den DSN aus der Umgebungsvariable QSS_ODBC_DSN (oder
+  (plain-odbc-qss-test:run-all :dsn "TESTDB")): DDL, Text (implizit,
+  Unicode, ANSI, jenseits Windows-1252, Surrogatpaare), leerer String, NULL,
+  Zahlen, Ja/Nein, Datum, reine Uhrzeit 1899, LOB (auch Unicode, mehrteilig),
+  exakte Dezimalzahlen (nur Access), Zeilenzahl, Rollback/Commit,
+  Fehlermeldung, SQLSTATE nach ODBC 3, Katalogfunktion SQLColumns.
+  Merkmale je Datenbank wie in racket/db (Access, SQLite).
+  Legt die Tabelle QSS_ODBC_T an und loescht sie wieder.
+Ergebnis hier (Linux, unixODBC, SQLite): Unit 55/55, Integration 38/39
+(1 uebersprungen: exakte Dezimalzahlen gibt es in SQLite nicht).
+
+Faelle nach racket/db (13.10.2026, Teil 3)
+------------------------------------------
+Die Typ- und Abfragetests von racket/db (db-test/tests/db/db/sql-types.rkt,
+query.rkt) uebernommen, soweit sie fuer ODBC/Access/SQLite gelten. Dabei
+gefunden und behoben:
+- Exakte Dezimalzahlen als Parameter: Brueche (z. B. 5474/5) werden als
+  :decimal gebunden (Text, SQL_DECIMAL, Genauigkeit und Nachkommastellen aus
+  dem Wert). Vorher ging das gar nicht. 1/3 gibt einen Fehler statt zu runden.
+- :decimal wird als SQL_NUMERIC gebunden (*DECIMAL-PARAMETER-SQL-TYPE* = 2);
+  SQL_DECIMAL lehnt der Access-Treiber ab (HYC00, Lauf unter Access 14.10.2026).
+- Ganzzahlen ueber 32 Bit: implizit als :decimal (vorher stiller Ueberlauf);
+  ausdruecklich :integer mit zu grossem Wert gibt einen Fehler.
+- Binaerparameter mit Spaltengroesse 0 (wie Text/Memo): jetzt Laenge des Werts.
+- Binaerspalten: nie ueber das Pufferende lesen. SQLite-ODBC meldet BLOB als
+  BINARY(255); vorher wurde bei 256 Bytes ein Byte hinter dem Puffer gelesen.
+  Jetzt Warnung und Kuerzung; vollstaendig liest (setf (use-bind-column con) nil).
+- Datum/Zeit ohne Zeitzone: *DATE-TIME-ZONE* (Vorgabe 0). Access speichert
+  Wanduhrzeit; ueber die lokale Zeitzone wurde 2026-03-29 02:30 (Umstellung
+  auf Sommerzeit) zu 03:30. ACHTUNG, geaenderte Bedeutung: eine Universal Time
+  aus plain-odbc ist jetzt die Wanduhrzeit als UTC. Datumswerte mit
+  PLAIN-ODBC:ENCODE-DATE bauen und mit PLAIN-ODBC:DECODE-DATE zerlegen, nicht
+  mit ENCODE-/DECODE-UNIVERSAL-TIME (lokale Zone, verschiebt um 1-2 Stunden).
+  (setf plain-odbc:*date-time-zone* nil) stellt das alte Verhalten her.
+
+Neue Tests (Suite :racket-cases): Ganzzahlen an den Grenzen (INTEGER,
+SMALLINT, BYTE, ueber 32 Bit), Double, Single, Dezimal/Waehrung inkl. 1/40,
+Ja/Nein, Text (Grundfaelle mit \ und ', Griechisch, Devanagari, Arabisch,
+Japanisch, Kyrillisch, 255 Zeichen, Laenge auf dem Server), Memo bis 1 Mio.
+Zeichen inkl. Steuerzeichen, VARBINARY, Blob bis 1 Mio. Bytes, Datum 1776,
+Zeitstempel, reine Uhrzeit, beide Zeitumstellungen, NULL-Reihenfolge ueber 35
+Spalten, verschachtelte Abfragen, weiterarbeiten nach Fehler, zwei Anweisungen
+in einem String (Access), 2000 Abfragen ohne Handle-Verlust, vorbereitete
+Anweisungen (100 Einfuegungen, Abfrage, Datum, NULL), SQLTables,
+SQLPrimaryKeys (oder sauberer Fehler), Lesen ueber SQLGetData.
+Access: SUM() ueber INTEGER-Spalten kommt als Double zurueck.
+Access: BINARY(n) hat feste Laenge, kuerzere Werte kommen mit Nullbytes
+aufgefuellt zurueck (Test-Merkmal :binary-fixed-length). Fuer Binaerdaten
+variabler Laenge LONGBINARY (OLE-Objekt) verwenden.
+Ergebnis hier (Linux, unixODBC, SQLite): Unit 61/61, Integration 184/187
+(3 uebersprungen: exakte Dezimalzahlen und Mehrfachanweisung nur Access).
+
+Zeilenweise Abfrage (14.10.2026, Teil 4)
+----------------------------------------
+- MAP-QUERY / MAP-QUERY* / DO-QUERY: ruft fuer jede Ergebniszeile eine
+  Funktion auf bzw. fuehrt einen Rumpf aus; im Speicher liegt immer nur die
+  aktuelle Zeile (fuer grosse Tabellen, Uebertragung nach SQLite).
+    (plain-odbc:do-query ((id name) con "SELECT id, name FROM t WHERE x = ?" 5)
+      (print (list id name)))
+  Nur die erste Ergebnismenge. (RETURN wert) verlaesst die Schleife; die
+  Anweisung wird auch bei RETURN und Fehlern freigegeben.
+- Speicherverlust behoben: direkte Abfragen (exec-query/-update/-command mit
+  Parametern) gaben den Fremdspeicher ihrer Parameter nie frei, nur
+  vorbereitete Anweisungen taten das.
+Tests (Suite :streaming): Gleichheit mit exec-query, Spaltenbindung, RETURN,
+Fehler im Rumpf, 20000 Zeilen, Memo, Fehler ohne Ergebnismenge, Freigabe der
+Parameter (auch nach Fehler). Linux/SQLite: Integration 201/204.
+Access (14.10.2026): Unit 61/61, Integration 215/216 (1 uebersprungen).
+
+Faelle aus weiteren ODBC-Testsammlungen (14.10.2026, Teil 5)
+-----------------------------------------------------------
+Quellen: pyodbc tests/old/accesstests.py (Python, Access), psqlodbc
+test/src/*.c (C, 73 Programme), odbc-api tests/integration (Rust, 140),
+mysql-connector-odbc test/*.c (C). Diese pruefen Treiber; uebernommen wurden
+die Faelle, die die Schnittstelle von plain-odbc betreffen (Suite
+:external-cases):
+- Grenzwerte nach pyodbc (0, 1, 254, 255, 256 ... 20480) plus die
+  Puffergrenzen von plain-odbc (Sendeteil 25000 Zeichen, Lesepuffer 32768
+  UTF-16-Einheiten, 65536 Bytes, 100000 Bytes), Text, Memo, Memo mit
+  Surrogatpaaren auf den Grenzen, Blob; gebunden und ueber SQLGetData
+- NULL in jeder Spaltenart, negative Zahlen, Double mit 17 Stellen,
+  Waehrung -10.0010 und Grenzen, Parameter in Unterabfragen, Anfuehrungs-
+  zeichen/Backslash, LF/CRLF/Tab, Nullzeichen im Text, 100 Parameter,
+  wiederholte vorbereitete Anweisung mit NULL, Fehler mitten in einer Reihe,
+  zu langer Text (Fehler, Verbindung bleibt nutzbar), Zeilenzahlen (auch 0),
+  Fehler in einer Transaktion mit Commit/Rollback, ODBC-Escapes ({d}, {ts},
+  {fn UCASE/LENGTH/CONCAT}), Metadaten ueber SQLGetInfo, zweite Verbindung.
+Neue Fehler in plain-odbc wurden dabei unter SQLite keine gefunden. Gefunden
+und als Merkmal eingetragen: Eigenheiten des SQLite-ODBC-Treibers (Text am
+Nullzeichen abgeschnitten, Double mit 15 Stellen, keine {fn}-Escapes, keine
+VARCHAR-Laenge) -- am gespeicherten Wert geprueft, nicht in plain-odbc.
+Linux/SQLite: Unit 61/61, Integration 385/393 (8 uebersprungen: nur Access
+bzw. Treiber-Eigenheiten).
+
+Vergleich mit CLSQL (clsql-odbc, einziges anderes ODBC-System in Quicklisp)
+-------------------------------------------------------------------------
+- SQLLEN als :int (32 Bit, Kommentar zu SuSE AMD64), SQLBindParameter mit
+  :int fuer Spaltengroesse/Puffer: derselbe Fehler wie plain-odbc vorher, unter
+  Windows 64 Bit falsch.
+- Nur ANSI-Funktionen (SQLDriverConnect, SQLExecDirect, SQLDescribeCol), keine
+  W-Funktionen: Umlaute in Spaltennamen scheiterten am 13.10. unter SBCL.
+- Fehler ueber SQLError (ODBC 2); Umgebung zwar mit SQLAllocHandle.
+- Parameter immer als SQL_C_CHAR/SQL_CHAR.
+- CLSQL hat rund 300 Tests (tests/*.lisp), die aber CLSQLs SQL- und Objekt-
+  schicht pruefen (SQL-Syntax, Klassen, Zeit), nicht die ODBC-Bindung; ODBC
+  zuletzt 2015 gegen MS SQL unter Linux gelaufen (LATEST-TEST-RESULTS).
+
+Mehrere Verbindungen (14.10.2026, Teil 6)
+-----------------------------------------
+- plain-odbc schaltet beim Verbinden Autocommit aus. Folge: auch jedes SELECT
+  oeffnet eine Transaktion, die bis COMMIT/ROLLBACK offen bleibt. SQLite
+  sperrt dann Schreiber ("database is locked"); unter Access sah eine zweite
+  Verbindung die neue Tabelle nicht. Leser muessen ihre Transaktion
+  abschliessen -- oder:
+- Neu: PLAIN-ODBC:*CONNECT-AUTOCOMMIT* (Vorgabe NIL = altes Verhalten).
+  Mit T bleibt Autocommit an, empfohlen fuer Verbindungen, die nur lesen:
+    (let ((plain-odbc:*connect-autocommit* t)) (plain-odbc:connect-generic :dsn "TESTDB"))
+- Access puffert je Verbindung (PageTimeout, Zehntelsekunden); der Test
+  wartet bis 10 s und gibt die Verzoegerung aus.
+Tests: second-connection-independent (neue Zeile, Aenderung, nicht fest-
+geschriebene Aenderung unsichtbar), reader-with-autocommit.
+
+Linux/macOS (14.10.2026)
+------------------------
+- Bibliothek: unter Linux libodbc.so.2, libodbc.so oder libodbc.so.1
+  (vorher nur libodbc.so, das es nur mit unixodbc-dev gibt), unter macOS
+  unixODBC oder iODBC. Treibermanager: Paket unixodbc.
+- Alle Linux-Laeufe dieser Fassung: SBCL 2.2.9, unixODBC, SQLite und
+  PostgreSQL. Access-Treiber gibt es nur unter Windows.
+
+PostgreSQL (14.10.2026, Teil 7)
+-------------------------------
+- Testsuite kennt jetzt PostgreSQL (DDL im eigenen Dialekt, Merkmale).
+  Gelaufen unter Linux: PostgreSQL 16, psqlODBC 16.00 (Unicode-Treiber),
+  DSN PGTEST: Unit 61/61, Integration 435/441 (6 uebersprungen). SQLite
+  unveraendert gruen (391/401).
+- plain-odbc: *ANSI-ENCODING* richtet sich nach dem System (Windows
+  :cp1252, sonst :utf-8); vorher fest Windows-1252, unter Linux falsch.
+- Beobachtet und als Merkmal eingetragen:
+  * psqlODBC rollt bei Fehlern in der Ausfuehrung nur die Anweisung zurueck
+    (wie Access). Bei einem SYNTAXFEHLER verwirft psqlODBC 16 aber die ganze
+    Transaktion -- psqlodbc Issue #203, dort in neueren Fassungen behoben
+    (Test rollback-syntax-error-test); die Suite erwartet bei Treibern ab 18
+    das korrekte Verhalten. Gefunden durch den uebernommenen Fall.
+  * PostgreSQL speichert kein Nullzeichen in TEXT.
+  * Unter Linux nimmt der Unicode-Treiber ueber SQL_C_CHAR (:string) keine
+    Nicht-ASCII-Zeichen an, auch nicht mit setlocale; unter Windows
+    ungeprueft. :unicode-string bzw. implizite Strings gehen immer.
+
+ANSI-Kodierung je Verbindung (14.10.2026, Teil 8)
+-------------------------------------------------
+Anlass: SQLite-ODBC (Werner) unter Windows, 2 Fehler (TEXT-ANSI-ROUNDTRIP,
+TEXT-WHERE-AND-LIKE). Der Treiber nimmt ANSI-Text (SQL_C_CHAR, :string/:clob)
+auch unter Windows als UTF-8; plain-odbc schickte Windows-1252. In der Datei
+standen die Bytes roh (FC fuer ue, 80 fuer EUR), beim Lesen fehlten Zeichen.
+Mit UTF-8 kodiert: gleiche Bytes wie ueber Unicode. Die Kodierung haengt also
+am Treiber, nicht am Betriebssystem (Access: Windows-1252, SQLite: UTF-8).
+- Jede Verbindung hat ihre Kodierung (CONNECTION-ANSI-ENCODING, setf-bar),
+  festgelegt beim Verbinden: (connect-generic :dsn "X" :ansi-encoding :utf-8);
+  ohne Angabe der Wert von *ANSI-ENCODING* zu diesem Zeitpunkt. Unbekannte
+  Kodierung -> Fehler vor dem Verbinden. :ansi-encoding geht nicht in die
+  Verbindungszeichenfolge.
+- Alle Einstiege (exec-*, map-query/do-query, prepare-statement, Parameter
+  vorbereiteter Anweisungen, Katalogfunktionen) binden *ANSI-ENCODING* an die
+  Kodierung ihrer Verbindung. Access und SQLite koennen so gleichzeitig offen
+  sein, auch verschachtelt (do-query auf Access, darin exec-update auf SQLite).
+- connect-sqlite verbindet mit :ansi-encoding :utf-8.
+- Fehlermeldung bei connect-generic nennt Schluessel und Wert.
+Tests: split-connect-attributes, check-ansi-encoding, feature-mismatch-text
+(Unit); ansi-encoding-follows-connection (direkt, vorbereitet, zeilenweise,
+zweite Verbindung; *ANSI-ENCODING* dabei absichtlich falsch). Merkmal
+:ansi-is-utf-8 fuer SQLite; die Suite verbindet dann mit UTF-8.
+Gegenprobe: ohne die Bindung an die Verbindung 6 Fehler (darunter die beiden
+vom Windows-Lauf), mit ihr 0.
+Aufgeraeumt: die alten Tests von plain-odbc (plain-odbc-test.asd,
+src/test/test-*.lisp, src/test/readme.txt; ODBC-2-Zeit, Oracle/MySQL/SQL Server)
+entfernt. Gegen die neue Fassung geprueft: test-sqlite.lisp scheitert nur an der
+bekannten Treiber-Eigenheit (BLOB als BINARY(255) gemeldet; mit gebundenen
+Spalten werden Blobs ueber 255 Bytes mit Warnung gekuerzt -> USE-BIND-COLUMN
+NIL), das deckt die Suite ab. Getestet wird nur noch mit plain-odbc-qss-test.
+Skip-Meldungen nennen nur noch das stoerende Merkmal ("Datenbank hat
+DRIVER-ROUNDS-DOUBLES", "Datenbank ohne EXACT-NUMERIC").
+Windows/SQLite vorher: Unit 61/61, Integration 389/401, 2 Fehler, 10 ueber-
+sprungen. Linux jetzt: Unit 76/76; SQLite 397/407 (10 uebersprungen), auch mit
+Vorgabe :cp1252 wie unter Windows; PostgreSQL 435/442 (7 uebersprungen).
+
+Luecken nach Coverage-Messung (14.10.2026, Teil 9)
+--------------------------------------------------
+Mit sb-cover gemessen, welche Funktionen die Suite nie ausfuehrte (vorher
+68-84 % der Ausdruecke in den oberen Dateien), und dafuer Tests geschrieben
+(Suite :gap-cases). Zwei Fehler im Original gefunden:
+- :clob-Parameter (ANSI, SQLPutData): Gesamtlaenge in Zeichen statt Bytes an
+  SQL_LEN_DATA_AT_EXEC. In UTF-8 (SQLite) wurde "Groesse EUR" nach 7 Bytes
+  abgeschnitten -- still, ohne Fehler.
+- Lesen ueber SQLGetData (USE-BIND-COLUMN NIL, noetig fuer SQLite-Blobs):
+  NUMERIC/DECIMAL kam immer als Double, *DECIMAL-AS-RATIONAL* wurde
+  uebergangen. Neu: GD-EXACT-DECIMAL-COLUMN.
+Entfernt (toter Code, nie ausgewaehlt): STRING-COLUMN, DECIMAL-COLUMN,
+CLOB-COLUMN, GET-CHARACTER-DATA (Zeichenspalten werden seit ODBC 3.5 als
+WCHAR gelesen).
+Neue Tests: clob-ansi-roundtrip (Umlaute auf den Sendeteilgrenzen, leer,
+NULL), getdata-exact-decimal, getdata-bigint (bis +-2^63), Ausgabeparameter
+jeden Typs (Ganzzahl, ANSI, Unicode, Double, Dezimal, Datum 1776, Binaer),
+INOUT und NULL, exec-prepared-command mehrfach, mehrere Ergebnismengen,
+get-foreign-keys (oder sauberer Fehler), trace-connection/untrace,
+print-object, connect (DSN, Benutzer, Kennwort), connect-sqlite.
+Merkmale: :out-parameters, :multiple-result-sets (PostgreSQL),
+:foreign-keys, :bigint (PostgreSQL, SQLite), :empty-login-ok (Access, SQLite).
+Gegenprobe: ohne die beiden Korrekturen schlagen clob-ansi-roundtrip (SQLite)
+und getdata-exact-decimal (PostgreSQL) an.
+Coverage jetzt (Linux, SQLite + PostgreSQL): odbc-main 94 %, parameter 95 %,
+column 90 %, odbc-functions 84 %. Nie ausgefuehrt: connect-access/-oracle/
+-sql-server/-mysql (keine solche Datenbank hier).
+Linux: Unit 76/76; SQLite 420/435 (15 uebersprungen), auch mit Vorgabe
+:cp1252; PostgreSQL 467/477 (10 uebersprungen).
+
+Untere Schicht neu, aus den Microsoft-Headern (14.10.2026, Teil 10)
+--------------------------------------------------------------------
+Die drei Dateien von Paul Meurer (odbc-constants, odbc-ff-interface,
+odbc-functions; Lizenz mit Gebuehrenverbot) sind ersetzt:
+- odbc-headers/: sql.h, sqlext.h, sqltypes.h, sqlucode.h unveraendert aus
+  github.com/microsoft/ODBC-Specification (Commit 4dda959, 2023-06-13, MIT).
+- tools/odbc-api-spec.lisp: was plain-odbc braucht (27 Funktionen, 13 Typen,
+  3 Strukturen). tools/generate-odbc-api.lisp: Generator in Lisp (kleiner
+  C-Praeprozessor, typedef/struct/Prototypen, SAL-Annotationen entfernt;
+  Header mit und ohne _WIN64 gelesen, Unterschiede werden zeigerbreit).
+- src/odbc/odbc-api-generated.lisp: erzeugt, wird mitgeliefert; 1397
+  Konstanten. Laden braucht weder Header noch Compiler. Test
+  GENERATED-FILE-IS-CURRENT prueft, dass die Datei zum Generator passt.
+- tools/check-odbc-api.lisp: Gegenprobe mit C-Compiler gegen die Header der
+  Plattform (Werte, Typgroessen und Vorzeichen, Strukturlayouts, Prototypen).
+  Linux (gcc 13.3, unixODBC 2.3.12): 1446 Punkte, alles was plain-odbc
+  benutzt gleich; 5 Abweichungen in unbenutzten Konstanten (SQL_SPEC_*,
+  Trace-Datei, SQL_API_SQLCANCELHANDLE 1550 bei Microsoft, 1022 bei unixODBC).
+- src/odbc/odbc-library.lisp, dates.lisp, odbc-calls.lisp: neu geschrieben.
+  *ODBC-LIBRARY-FILE* wirkt jetzt (vorher unter SBCL ungebunden/ignoriert).
+Gefunden dabei:
+- SQL_C_BOOKMARK haengt von der Zeigerbreite ab (64 Bit -27, 32 Bit -18).
+- SQLMoreResults: Fehler der naechsten Ergebnismenge wurden nie gemeldet
+  (Bedingung erzeugt, aber nicht signalisiert). Jetzt SQL-ERROR.
+- Diagnosemeldungen: vorher fest 1024 Zeichen, laengere still gekuerzt. Jetzt
+  waechst der Puffer. psqlODBC/unixODBC melden eine Kuerzung mit SQL_SUCCESS
+  und der gekuerzten Laenge (ODBC verlangt SQL_SUCCESS_WITH_INFO und die
+  volle); deshalb gilt ein voller Puffer als vielleicht gekuerzt. Ebenso bei
+  Spaltennamen (vorher fest 256 Zeichen).
+- SQLSetConnectAttrW/SQLSetEnvAttr: Werte jetzt als Zeiger wie im Header.
+- 23 Konstanten aus ODBC 2 (z. B. SQL_POSITION_TO) entfallen, unbenutzt.
+SQL-ERROR/SQL-WARNING: neu der Slot DIAGNOSTICS (alle Diagnosesaetze als
+(sqlstate native-error message)), Leser SQL-CONDITION-MESSAGE, -STATE,
+-NATIVE-ERROR, -DIAGNOSTICS. Meldungstext unveraendert.
+Neue Tests: generated-file-is-current, generator-lisp-names,
+pointer-sized-types-match-platform, return-code-classification,
+sql-len-data-at-exec, next-capacity, error-carries-diagnostics,
+long-error-message-complete (3000 Zeichen + EUR), long-column-alias,
+get-info-value-types.
+Linux: Unit 105/105; SQLite 432/448 (16 uebersprungen), auch mit Vorgabe
+:cp1252; PostgreSQL 481/491 (10 uebersprungen).
+
+Doku und Lizenz (14.10.2026, Teil 11)
+-------------------------------------
+- doc/documentation.html neu (Englisch): alle Funktionen, Parameter- und
+  Ergebnistypen, Datum, Kodierungen, Fehler, Variablen, Generator, Tests.
+  Beispielausgaben aus echten Laeufen (SQLite, PostgreSQL).
+- doc/notes.html: oben Treiber-Eigenheiten von Access, PostgreSQL, SQLite
+  und den Treibermanagern (aus den Testlaeufen); darunter Averkamps alte
+  Notizen unveraendert als "Historical notes".
+- license.txt: Averkamp (BSD, unveraendert), QSS / Friedrich Dominicus 2026
+  (BSD), Microsoft-Header (MIT); Meurer nur noch in der Geschichte, kein Code.
+- readme.txt neu. Bedingungen und ihre Leser exportiert (SQL-ERROR,
+  SQL-CONDITION-STATE ...).
+- dates.lisp: Herkunft der Kalenderrechnung vermerkt (Howard Hinnant,
+  gemeinfrei).
+
+Windows-Lauf neuer Stand (14.10.2026, nach Teil 11)
+---------------------------------------------------
+Access (TESTDB, SBCL 2.6.9 win-x64): Unit 105/105, Integration 471/482,
+10 uebersprungen, 1 Fehler: ANSI-ENCODING-FOLLOWS-CONNECTION las eine auf der
+zweiten Verbindung festgeschriebene neue Zeile sofort ueber *con* -- Access
+zeigt sie dort nicht sofort. Testfehler: c2 liest jetzt selbst zurueck.
+Gegenprobe ohne Bindung an die Verbindung schlaegt weiter an.
+Nach der Korrektur, Windows (SBCL 2.6.9 win-x64), je Unit 105/105, 0 Fehler:
+  Access TESTDB 472/482 (10 uebersprungen), SQLite SQLITETEST 432/448 (16),
+  PostgreSQL PGTEST 494/501 (7; psqlODBC Unicode x64, Ausgabeparameter,
+  mehrere Ergebnismengen, 3000-Zeichen-Meldung gruen). psqlODBC unter Windows
+  meldet die Kuerzung eines Bezeichners auf 63 Zeichen als Hinweis (42622,
+  SQL_SUCCESS_WITH_INFO) -> erscheint als SQL-WARNING, wie vorgesehen.
+Neu bestaetigt unter Access: clob-ansi-roundtrip, getdata-exact-decimal,
+trace-connection, long-column-alias, get-info-value-types,
+error-carries-diagnostics. SQLForeignKeys: vom Access-Treiber nicht
+unterstuetzt (IM001), in notes.html vermerkt.
+
+Gegenprobe mingw-w64, Ausnahmen, psqlODBC-Meldungen (14.10.2026, Teil 12)
+------------------------------------------------------------------------
+- Gegenprobe unter Windows (MSYS2, gcc, mingw-w64-Header): 1446 Punkte, nur
+  SQL_SPEC_* abweichend. SQL_API_SQLCANCELHANDLE dort 1550 wie bei Microsoft;
+  unixODBC hat 1022 (2.3.12 und Quellstand 2026-10-13).
+- Spec: :exclude-constants, Gruppen mit Begruendung (steht in der erzeugten
+  Datei): SQL_SPEC_* (Microsoft-Repository 4.00 = Entwurf ODBC 4.0, ODBCVER
+  0x0380) und SQL_OPT_TRACE_FILE_DEFAULT (je Treibermanager). 1399
+  Konstanten. Linux-Gegenprobe: nur noch SQL_API_SQLCANCELHANDLE.
+- psqlODBC (Quelle environ.c, ER_ReturnError) teilt lange Meldungen absichtlich
+  in mehrere Diagnosesaetze in der Groesse der ersten Anfrage (daher SQL_SUCCESS
+  und Teillaenge; Teil 10 hatte das falsch unixODBC zugeschrieben). Gezaehlt
+  wird in UTF-8-Bytes; faellt die Grenze in ein Mehrbyte-Zeichen, liefert
+  SQLGetDiagRecW (odbcapi30w.c) nur "Error: SqlState=..." statt des Textes.
+  Nachgestellt mit 92 x + "aeoeue" bei Puffer 100: beide Saetze ersetzt.
+  plain-odbc: erster Puffer 8190 Zeichen (*DIAGNOSTIC-BUFFER-SIZE*), vorher
+  512 (Teil 10) bzw. fest 1024 (Original) -- dort ging die Meldung verloren.
+  Test umlaut-on-old-buffer-boundary; mit Puffer 512 schlaegt er an.
+Linux: Unit 105/105; SQLite 432/449 (17 uebersprungen); PostgreSQL 487/497.
+Windows PGTEST (psqlODBC Unicode x64): 500/507, 7 uebersprungen, 0 Fehler,
+umlaut-on-old-buffer-boundary gruen. Compiler-Notiz in WITH-ERROR-HANDLING
+(unerreichbarer Code) beseitigt.
+
+Doku: von C nach Lisp (14.10.2026, Teil 13)
+-------------------------------------------
+- doc/examples/: dasselbe Programm dreimal -- example.c (ODBC-API in C, W-
+  Funktionen, jeder Aufruf geprueft), example-raw.lisp (Zeile fuer Zeile auf
+  den erzeugten Deklarationen %%SQL-...) und example.lisp (mit plain-odbc).
+  Alle drei unter Linux gegen SQLite und PostgreSQL gelaufen, gleiche Ausgabe.
+  C mit gcc -Wall -Wextra ohne Warnung.
+- documentation.html: neuer Abschnitt 17 "From C to Lisp" (Code aus den
+  Dateien uebernommen, echte Ausgabe); Abschnitt 14: grosser Startpuffer und
+  psqlODBC-Teilung; Abschnitt 16: ausgenommene Konstanten und Gegenprobe gegen
+  drei Header-Quellen. readme.txt: Verweis auf doc/examples/.
+
+MySQL/MariaDB (14.10.2026, Teil 14)
+-----------------------------------
+Getestet unter Linux: MariaDB 10.11.14, MariaDB Connector/ODBC 3.1.15 (Unicode).
+Zwei Fehler in plain-odbc gefunden und behoben:
+- column.lisp: Zeichen-/Binaerspalten groesser als *MAX-PRECISION* (MariaDB
+  meldet TEXT und Katalogspalten mit 16777216) werden mit SQLGetData gelesen
+  (uclob-column/blob-column). Vorher Fehler "column TYPE_NAME has length
+  16777216, larger than maximum size". Test oversized-columns-read-as-lob.
+- odbc-main.lisp, bind-columns: Spaltenfeld mit NIL vorbelegt; nach einem
+  Fehler mitten im Binden scheiterte das Aufraeumen mit MISSING-SLOT.
+Treiberfehler (in C nachgestellt, nicht plain-odbc):
+- U+xxD8..U+xxDB (z.B. "Ø"): Laenge nach dem niederwertigen Byte berechnet
+  (MariaDB ODBC-502, behoben in 3.1.24 und 3.2.10, August 2026). Schreiben
+  haengt Nullzeichen an, Lesen meldet zu wenige Bytes. Merkmal
+  :driver-utf-16-d8-bug am Verhalten erkannt; neuer Test utf-16-low-byte-d8
+  (laeuft auf PostgreSQL und SQLite gruen).
+- Text wird beim Lesen am Nullzeichen abgeschnitten (:driver-truncates-at-nul).
+Testsuite: Dialekt fuer MySQL (LONGTEXT, LONGBLOB, DATETIME, CHAR_LENGTH) und
+blind fuer SQL Server (NVARCHAR(MAX), VARBINARY(MAX), DATETIME2, LEN(x+N'x')-1,
+TINYINT ohne Vorzeichen). row-counts aendert jetzt jede getroffene Zeile
+(n = n + 10), weil MySQL nur geaenderte Zeilen zaehlt.
+Linux: MariaDB 476/491 (15 uebersprungen), PostgreSQL 503/513, SQLite 448/465,
+jeweils 0 Fehler. SQL Server: ungeprueft.
+
+Umbenennung in qss-cl-odbc (03.11.2026, Teil 15)
+------------------------------------------------
+Anlass: Veroeffentlichung. Der Name plain-odbc gehoert in Quicklisp dem
+Original von Roland Averkamp; diese Fassung bekommt einen eigenen Namen,
+damit beide nebeneinander bestehen koennen.
+- Systeme: plain-odbc -> qss-cl-odbc, plain-odbc-qss-test -> qss-cl-odbc-test,
+  plain-odbc-generate -> qss-cl-odbc-generate (Dateien *.asd entsprechend).
+- Pakete: PLAIN-ODBC -> QSS-CL-ODBC (ohne Spitznamen PLAIN-ODBC),
+  PLAIN-ODBC-QSS-TEST -> QSS-CL-ODBC-TEST, PLAIN-ODBC-GENERATE ->
+  QSS-CL-ODBC-GENERATE; FiveAM-Suite :plain-odbc-qss -> :qss-cl-odbc.
+- src/odbc/plain-odbc-package.lisp -> src/odbc/package.lisp.
+- check-odbc-api.lisp: PLAIN-ODBC-SYMBOL -> LIBRARY-SYMBOL.
+- Meldungen beginnen mit "[qss-cl-odbc]" bzw. "qss-cl-odbc:".
+- Die Schnittstelle ist sonst unveraendert. Bestehender Code: plain-odbc: durch
+  qss-cl-odbc: ersetzen und :qss-cl-odbc statt :plain-odbc laden.
+- readme.txt durch README.md ersetzt.
+Linux (SBCL 2.2.9, unixODBC 2.3.12, SQLite-ODBC 0.99991): Unit 109/109, SQLite
+448/465 (17 uebersprungen), 0 Fehler -- wie vor der Umbenennung. Generator
+erzeugt odbc-api-generated.lisp unveraendert; Gegenprobe mit gcc wie vorher
+(1442 Punkte, 1 Abweichung: SQL_API_SQLCANCELHANDLE, unixODBC 1022,
+Microsoft-Header 1550).
+
+Beispiele (03.11.2026, Teil 16)
+-------------------------------
+- README.md: Abschnitt Examples (Parameter, Abfragen, exakte Dezimalzahlen,
+  Datum auch vor 1900, do-query, vorbereitete Anweisung, Fehler, Katalog).
+- doc/examples/tour.lisp: dieselbe Tour zum Auswerten Form fuer Form
+  (C-x C-e), Ergebnisse als Kommentar.
+Beides gegen PostgreSQL 16.15, psqlODBC (Unicode), SBCL 2.2.9 unter Linux
+ausgefuehrt; die Kommentare sind die tatsaechlichen Ergebnisse.
+- Zeilenenden durchgehend LF (vorher CR/LF in einigen Dateien von Averkamp).
+Testsuite nach Umbenennung und LF: SQLite 448/465 (17 uebersprungen),
+PostgreSQL 16.15 503/513 (10 uebersprungen), Unit 109/109, 0 Fehler.
+
+Chinook (03.11.2026, Teil 17)
+-----------------------------
+Chinook 1.4.5 (github.com/lerocha/chinook-database, Commit 7f677725, MIT)
+liegt als SQLite-Datei bei: src/test/chinook/ mit Lizenz, SOURCE.txt und
+expected.sexp (erwartete Werte aus ChinookSqliteFixture.cs, typisiert).
+- Suite :chinook (src/test/chinook-tests.lisp), nur lesend, in run-all:
+  die 35 Faelle der Chinook-Suite (Zeilenzahlen, letzter Datensatz je Tabelle,
+  Kunden 1-11 mit Unicode, Rechnungen mit Positionen, Summe = Positionen --
+  bei exakten Dezimalzahlen ohne ROUND) und eigene Faelle (Unicode-Parameter
+  und LIKE, do-query ueber alle Titel, Summen ueber 32 Bit, Join mit
+  Gruppierung, Datumsbereich, Fremdschluessel). Schema in CamelCase oder
+  snake_case (PostgreSQL-Skript) wird erkannt. Ohne DSN: Kopie der SQLite-Datei
+  ueber QSS_SQLITE_ODBC_DRIVER (Vorgabe "SQLite3"); sonst QSS_CHINOOK_DSN.
+- Fehler gefunden: SQLite-ODBC meldet jeden ganzzahligen Ausdruck ohne
+  deklarierten Typ als SQL_INTEGER (sum(), Literale, CAST AS BIGINT) und
+  kuerzt beim Lesen als SQL_C_SLONG still auf 32 Bit: sum(Bytes) 117386255350
+  kam als 1422138358, 3000000000 als -1294967296. Neu: Verbindungs-Slot
+  INTEGER-AS-BIGINT (exportiert), bei SQLite beim Verbinden T; SQL_INTEGER-
+  Spalten werden dann als SQL_BIGINT gelesen (column.lisp, create-column).
+  Test integers-beyond-32-bit-from-expressions.
+- doc/examples/chinook-tour.lisp: Tour ohne Server und ohne DSN auf einer
+  Kopie der Datei (Katalog, Unicode-Parameter, Join, do-query, Datum,
+  Transaktion mit vorbereiteter Anweisung); README: "Try it without a server".
+Linux: Unit 109/109; SQLite 451/468 (17 uebersprungen); PostgreSQL 16.15
+503/514 (11); Chinook 663/663 gegen die SQLite-Datei und gegen PostgreSQL
+(Chinook_PostgreSql.sql, snake_case), jeweils 0 Fehler.
+
+Gepruefte Umgebungen (Stand 03.11.2026)
+---------------------------------------
+Linux 64 Bit (SBCL 2.2.9, unixODBC): SQLite-ODBC, PostgreSQL (psqlODBC),
+MariaDB (Connector/ODBC 3.1). Windows 64 Bit (SBCL 2.6.9): Access, SQLite-ODBC,
+PostgreSQL (psqlODBC Unicode x64). Zahlen in den Teilen 11, 12 und 14.
+NICHT geprueft: SQL Server, macOS.
+
+Einbau
+------
+1. Eine alte plain-odbc-Kopie darf liegen bleiben; die Namen kollidieren nicht.
+2. Diesen Ordner nach ~/quicklisp/local-projects/qss-cl-odbc/ legen,
+   dann (ql:register-local-projects).
+3. (ql:quickload :qss-cl-odbc)
+   Falls noch alte Fasl im Cache liegen: (asdf:load-system :qss-cl-odbc :force t)
